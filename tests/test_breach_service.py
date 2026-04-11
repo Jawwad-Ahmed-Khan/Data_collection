@@ -471,7 +471,7 @@ async def test_create_breach_suppressed_as_duplicate(breach_service, sample_thre
     mock_breach_repo.insert_breach.assert_called_once()
     call_args = mock_breach_repo.insert_breach.call_args
     assert call_args.kwargs["is_duplicate"] is True
-    assert call_args.kwargs["duplicate_of_id"] == existing_breach_id
+    assert call_args.kwargs["duplicate_of_breach_id"] == existing_breach_id
 
 
 # ── Test: Integration ─────────────────────────────────────────────

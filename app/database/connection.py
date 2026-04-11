@@ -47,6 +47,7 @@ class DatabasePool:
                 max_size=self._settings.collection_db_pool_max,
                 server_settings={"timezone": _PKT_TIMEZONE},
                 ssl="require",
+                statement_cache_size=0,
             )
             logger.info(
                 "Database pool created: min=%d, max=%d, timezone=%s",
