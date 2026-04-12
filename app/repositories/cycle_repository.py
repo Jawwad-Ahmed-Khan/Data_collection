@@ -3,6 +3,7 @@ ClimaSync Collection Service — Cycle Repository
 """
 
 from typing import Any
+from uuid import UUID
 
 from app.models.cycle_models import CollectionCycle
 from app.repositories.base_repository import BaseRepository
@@ -16,16 +17,16 @@ from app.database.queries.cycle_queries import (
 class CycleRepository(BaseRepository):
     """Manages the collection cycle tracking logs."""
 
-    async def start_cycle(self, api_id: str, api_name: str = "unknown") -> str:
+    async def start_cycle(self, api_id: str, api_name: str = "unknown") -> UUID:
         """Create a new cycle in running status. Returns the cycle_id UUID."""
         row = await self.db.fetch_one(INSERT_CYCLE, api_id, api_name)
         if not row:
             raise RuntimeError("INSERT_CYCLE failed to return cycle_id")
-        return str(row["cycle_id"])
+        return row["cycle_id"]
 
     async def complete_cycle(
         self,
-        cycle_id: str,
+        cycle_id: UUID | str,
         status: str,
         locations_targeted: int = 0,
         locations_success: int = 0,

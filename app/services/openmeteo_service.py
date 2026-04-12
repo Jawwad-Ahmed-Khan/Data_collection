@@ -530,24 +530,6 @@ class OpenMeteoService:
             )
             
             if severity:
-                await self.breach_service.create_breach(
-                    source_api="open_meteo",
-                    disaster_kind="heatwave",
-                    metric_name="temp_max_c",
-                    observed_value=record.temp_c,
-                    threshold=threshold,
-                    severity=severity,
-                    observation_time=record.forecast_for_datetime,
-                    location_name=record.location_name,
-                    district=record.district,
-                    province=record.province,
-                    latitude=record.latitude,
-                    longitude=record.longitude,
-                    weather_location_id=record.location_id,
-                    is_forecast_breach=True,
-                    forecast_horizon_h=record.day_offset * 24,
-                )
-                
                 return True, severity, "temp_max_c", record.temp_c
         
         return False, None, None, None
@@ -614,75 +596,12 @@ class OpenMeteoService:
                 
                 await self.weather_repo.upsert_daily(summary)
                 stats["daily_upserted"] += 1
-
-                # DASHBOARD: Update 5-day forecast view
-                # We only take the first 5 days (Open-Meteo returns 5-7 days depending on params)
-                if summary.day_offset <= 4:
-                    f5day = Weather5DaySummaryBase(
-                        location_id=summary.location_id,
-                        location_key=summary.location_key,
-                        location_name=summary.location_name,
-                        district=summary.district,
-                        province=summary.province,
-                        summary_date=summary.summary_date,
-                        day_offset=summary.day_offset,
-                        day_label=summary.summary_date.strftime("%a"),
-                        temp_max_c=summary.temp_max_c,
-                        temp_min_c=summary.temp_min_c,
-                        feels_like_max_c=summary.feels_like_max_c,
-                        precip_total_mm=summary.precip_total_mm,
-                        precip_prob_max_pct=summary.precip_prob_max_pct,
-                        wind_speed_max_kmh=summary.wind_speed_max_kmh,
-                        wind_gusts_max_kmh=summary.wind_gusts_max_kmh,
-                        uv_index_max=summary.uv_index_max,
-                        dominant_condition=summary.dominant_condition,
-                        sunrise_at=summary.sunrise_at,
-                        sunset_at=summary.sunset_at,
-                        flag_extreme_heat_day=summary.flag_extreme_heat_day,
-                        flag_heatwave_day=summary.flag_heatwave_day,
-                        flag_heavy_rain_day=summary.flag_heavy_rain_day,
-                        flag_storm_day=summary.flag_storm_day,
-                        flag_cold_wave_day=summary.flag_cold_wave_day,
-                        worst_breach_severity=summary.worst_breach_severity,
-                    )
-                    await self.weather_repo.upsert_5day_forecast(f5day)
-
+                
             except Exception as e:
                 logger.error("Failed to process daily summary: %s", str(e))
                 stats["errors"] += 1
                 continue
         
-        # DASHBOARD: Update Current Weather View (Identify closest point to now)
-        try:
-            now = datetime.now(_PKT)
-            current_record = None
-            min_diff = timedelta(hours=24)
-
-            for record in hourly_records:
-                diff = abs((record.forecast_for_datetime - now).total_seconds())
-                if diff < min_diff.total_seconds():
-                    min_diff = timedelta(seconds=diff)
-                    current_record = record
-            
-            if current_record:
-                dashboard_current = CurrentWeatherLocationBase(
-                    location_id=current_record.location_id,
-                    location_key=current_record.location_key,
-                    location_name=current_record.location_name,
-                    temp_c=current_record.temp_c,
-                    temp_apparent_c=current_record.temp_apparent_c,
-                    precip_mm=current_record.precip_mm,
-                    wind_speed_kmh=current_record.wind_speed_kmh,
-                    humidity_pct=current_record.humidity_pct,
-                    pressure_hpa=current_record.pressure_hpa,
-                    weather_condition=current_record.weather_condition,
-                    weather_description=current_record.weather_description,
-                    is_daytime=current_record.is_daytime,
-                    observation_time=current_record.forecast_for_datetime,
-                )
-                await self.weather_repo.upsert_current_weather(dashboard_current)
-                logger.debug(f"Updated dashboard current weather for {current_record.location_name}")
-        except Exception as e:
-            logger.error(f"Failed to update dashboard current weather: {e}")
+        return stats
 
         return stats
