@@ -767,6 +767,7 @@ CREATE TABLE weather_hourly_window (
     province                pk_province  NOT NULL,
     latitude                DECIMAL(10,7) NOT NULL,
     longitude               DECIMAL(10,7) NOT NULL,
+    coordinates             GEOGRAPHY(POINT, 4326) NOT NULL,
 
     -- Source tracking
     cycle_id                UUID REFERENCES collection_cycles(cycle_id)
@@ -863,7 +864,7 @@ CREATE TABLE weather_hourly_window (
     CONSTRAINT weather_window_uv_range
         CHECK (uv_index IS NULL OR uv_index BETWEEN 0 AND 20),
     CONSTRAINT weather_window_day_offset_range
-        CHECK (day_offset BETWEEN 0 AND 4),
+        CHECK (day_offset BETWEEN 0 AND 5),
     CONSTRAINT weather_window_cape_non_negative
         CHECK (cape_jkg IS NULL OR cape_jkg >= 0)
 );
@@ -916,6 +917,10 @@ CREATE TABLE weather_daily_summaries (
     district                VARCHAR(100) NOT NULL,
     province                pk_province  NOT NULL,
 
+    latitude                DECIMAL(10,7) NOT NULL,
+    longitude               DECIMAL(10,7) NOT NULL,
+    coordinates             GEOGRAPHY(POINT, 4326) NOT NULL,
+
     -- Source
     cycle_id                UUID REFERENCES collection_cycles(cycle_id)
                                 ON DELETE SET NULL,
@@ -959,7 +964,7 @@ CREATE TABLE weather_daily_summaries (
     PRIMARY KEY (location_id, summary_date),
 
     CONSTRAINT daily_summary_day_offset_range
-        CHECK (day_offset BETWEEN 0 AND 4),
+        CHECK (day_offset BETWEEN 0 AND 5),
     CONSTRAINT daily_summary_date_not_past
         CHECK (summary_date >= CURRENT_DATE - INTERVAL '1 day')
     -- small tolerance for timezone differences
@@ -1291,7 +1296,7 @@ CREATE TABLE flood_gauge_forecasts (
              OR prob_exceeds_extreme_pct BETWEEN 0 AND 100)
         ),
     CONSTRAINT flood_forecast_day_offset_range
-        CHECK (day_offset BETWEEN 0 AND 4)
+        CHECK (day_offset BETWEEN 0 AND 5)
 );
 
 CREATE INDEX idx_flood_forecast_gauge_datetime
@@ -1558,11 +1563,11 @@ BEGIN
         NEW.forecast_date - CURRENT_DATE
     )::SMALLINT;
 
-    -- Reject rows outside the 5-day window
-    IF NEW.day_offset < 0 OR NEW.day_offset > 4 THEN
+    -- Reject rows outside the 6-day window
+    IF NEW.day_offset < 0 OR NEW.day_offset > 5 THEN
         RAISE EXCEPTION
-            'forecast_for_datetime % is outside the 5-day window. '
-            'day_offset=% is not in range [0,4]',
+            'forecast_for_datetime % is outside the 6-day window. '
+            'day_offset=% is not in range [0,5]',
             NEW.forecast_for_datetime, NEW.day_offset;
     END IF;
 
@@ -1583,9 +1588,9 @@ RETURNS TRIGGER AS $$
 BEGIN
     NEW.day_offset := (NEW.summary_date - CURRENT_DATE)::SMALLINT;
 
-    IF NEW.day_offset < 0 OR NEW.day_offset > 4 THEN
+    IF NEW.day_offset < 0 OR NEW.day_offset > 5 THEN
         RAISE EXCEPTION
-            'summary_date % is outside 5-day window. day_offset=%',
+            'summary_date % is outside 6-day window. day_offset=%',
             NEW.summary_date, NEW.day_offset;
     END IF;
 
@@ -1612,9 +1617,9 @@ BEGIN
         EPOCH FROM (NEW.forecast_for_datetime - now())
     )::INT / 3600;
 
-    IF NEW.day_offset < 0 OR NEW.day_offset > 4 THEN
+    IF NEW.day_offset < 0 OR NEW.day_offset > 5 THEN
         RAISE EXCEPTION
-            'Flood forecast % is outside 5-day window. day_offset=%',
+            'Flood forecast % is outside 6-day window. day_offset=%',
             NEW.forecast_for_datetime, NEW.day_offset;
     END IF;
 

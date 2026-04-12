@@ -17,6 +17,7 @@ Full implementation would include all 19 hourly + 14 daily variables.
 
 from __future__ import annotations
 
+from decimal import Decimal
 from datetime import datetime, date, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -31,6 +32,20 @@ logger = get_logger(__name__)
 
 # Pakistan Standard Time
 _PKT = ZoneInfo("Asia/Karachi")
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    """
+    Safely convert value to Decimal.
+    
+    Returns None if input is None or invalid.
+    """
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ValueError, TypeError):
+        return None
 
 
 class OpenMeteoService:
@@ -79,13 +94,18 @@ class OpenMeteoService:
             "dew_point_2m",
             "precipitation",
             "precipitation_probability",
+            "rain",
+            "snowfall",
+            "snow_depth",
             "wind_speed_10m",
             "wind_gusts_10m",
             "wind_direction_10m",
             "relative_humidity_2m",
             "surface_pressure",
             "visibility",
+            "cloud_cover",
             "uv_index",
+            "cape",
             "weather_code",
             "is_day",
         ]
@@ -119,12 +139,18 @@ class OpenMeteoService:
             "apparent_temperature_max",
             "apparent_temperature_min",
             "precipitation_sum",
+            "rain_sum",
+            "snowfall_sum",
+            "precipitation_hours",
             "precipitation_probability_max",
             "wind_speed_10m_max",
             "wind_gusts_10m_max",
+            "wind_direction_10m_dominant",
             "uv_index_max",
             "sunrise",
             "sunset",
+            "daylight_duration",
+            "weather_code",
         ]
         
         return {
@@ -171,18 +197,26 @@ class OpenMeteoService:
                 day_offset = (forecast_date - today).days
                 
                 # Extract values (with safe indexing)
-                temp_c = self._safe_get(hourly_data.get("temperature_2m"), i)
-                temp_apparent_c = self._safe_get(hourly_data.get("apparent_temperature"), i)
-                temp_dewpoint_c = self._safe_get(hourly_data.get("dew_point_2m"), i)
-                precip_mm = self._safe_get(hourly_data.get("precipitation"), i, 0.0)
+                # double precision columns: convert to float
+                temp_c = to_decimal(self._safe_get(hourly_data.get("temperature_2m"), i))
+                temp_apparent_c = to_decimal(self._safe_get(hourly_data.get("apparent_temperature"), i))
+                temp_dewpoint_c = to_decimal(self._safe_get(hourly_data.get("dew_point_2m"), i))
+                precip_mm = to_decimal(self._safe_get(hourly_data.get("precipitation"), i, 0.0))
+                rain_mm = to_decimal(self._safe_get(hourly_data.get("rain"), i))
+                snowfall_cm = to_decimal(self._safe_get(hourly_data.get("snowfall"), i))
+                snow_depth_m = to_decimal(self._safe_get(hourly_data.get("snow_depth"), i))
+                wind_speed_kmh = to_decimal(self._safe_get(hourly_data.get("wind_speed_10m"), i))
+                wind_gusts_kmh = to_decimal(self._safe_get(hourly_data.get("wind_gusts_10m"), i))
+                pressure_hpa = to_decimal(self._safe_get(hourly_data.get("surface_pressure"), i))
+                uv_index = to_decimal(self._safe_get(hourly_data.get("uv_index"), i))
+                cape_jkg = to_decimal(self._safe_get(hourly_data.get("cape"), i))
+                
+                # SMALLINT/INT columns: keep as-is
                 precip_prob_pct = self._safe_get(hourly_data.get("precipitation_probability"), i)
-                wind_speed_kmh = self._safe_get(hourly_data.get("wind_speed_10m"), i)
-                wind_gusts_kmh = self._safe_get(hourly_data.get("wind_gusts_10m"), i)
                 wind_direction_deg = self._safe_get(hourly_data.get("wind_direction_10m"), i)
                 humidity_pct = self._safe_get(hourly_data.get("relative_humidity_2m"), i)
-                pressure_hpa = self._safe_get(hourly_data.get("surface_pressure"), i)
                 visibility_m = self._safe_get(hourly_data.get("visibility"), i)
-                uv_index = self._safe_get(hourly_data.get("uv_index"), i)
+                cloud_cover_pct = self._safe_get(hourly_data.get("cloud_cover"), i)
                 weather_code = self._safe_get(hourly_data.get("weather_code"), i)
                 is_daytime = self._safe_get(hourly_data.get("is_day"), i, 1) == 1
                 
@@ -209,6 +243,9 @@ class OpenMeteoService:
                     temp_dewpoint_c=temp_dewpoint_c,
                     precip_mm=precip_mm,
                     precip_prob_pct=precip_prob_pct,
+                    rain_mm=rain_mm,
+                    snowfall_cm=snowfall_cm,
+                    snow_depth_m=snow_depth_m,
                     wind_speed_kmh=wind_speed_kmh,
                     wind_gusts_kmh=wind_gusts_kmh,
                     wind_direction_deg=wind_direction_deg,
@@ -216,7 +253,9 @@ class OpenMeteoService:
                     humidity_pct=humidity_pct,
                     pressure_hpa=pressure_hpa,
                     visibility_m=visibility_m,
+                    cloud_cover_pct=cloud_cover_pct,
                     uv_index=uv_index,
+                    cape_jkg=cape_jkg,
                     weather_code=weather_code,
                     weather_condition=weather_condition,
                     weather_description=weather_description,
@@ -247,54 +286,57 @@ class OpenMeteoService:
         return value if value is not None else default
 
     def _compute_rolling_sums(self, records: list[WeatherHourlyWindowBase]) -> None:
-        """Compute rolling precipitation sums (24h, 72h) for each record."""
+        """Compute rolling precipitation sums (3h, 6h, 12h, 24h, 72h) for each record."""
         for i, record in enumerate(records):
-            # 24-hour rolling sum
-            precip_24h = 0.0
-            for j in range(max(0, i - 23), i + 1):
-                precip_24h += records[j].precip_mm
-            record.precip_24h_mm = precip_24h
-            
-            # 72-hour rolling sum
-            precip_72h = 0.0
-            for j in range(max(0, i - 71), i + 1):
-                precip_72h += records[j].precip_mm
-            record.precip_72h_mm = precip_72h
+            # Helper for rolling sum computation
+            def get_rolling_sum(window_size: int) -> Decimal:
+                total = Decimal(0)
+                for j in range(max(0, i - window_size + 1), i + 1):
+                    val = records[j].precip_mm
+                    if val is not None:
+                        total += Decimal(str(val))
+                return total if total > 0 else Decimal(0)
+
+            record.precip_3h_mm = get_rolling_sum(3)
+            record.precip_6h_mm = get_rolling_sum(6)
+            record.precip_12h_mm = get_rolling_sum(12)
+            record.precip_24h_mm = get_rolling_sum(24)
+            record.precip_72h_mm = get_rolling_sum(72)
 
     def _set_weather_flags(self, record: WeatherHourlyWindowBase) -> None:
         """Set weather flags based on thresholds."""
         # Extreme heat (>45°C)
-        if record.temp_c >= 45.0:
+        if record.temp_c is not None and record.temp_c >= Decimal("45.0"):
             record.flag_extreme_heat = True
         
         # Heatwave (>40°C)
-        if record.temp_c >= 40.0:
+        if record.temp_c is not None and record.temp_c >= Decimal("40.0"):
             record.flag_heatwave = True
         
         # Heavy rain (>50mm in 24h)
-        if record.precip_24h_mm and record.precip_24h_mm >= 50.0:
+        if record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("50.0"):
             record.flag_heavy_rain = True
         
         # Very heavy rain (>100mm in 24h)
-        if record.precip_24h_mm and record.precip_24h_mm >= 100.0:
+        if record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("100.0"):
             record.flag_very_heavy_rain = True
         
         # Storm (wind gusts >60 km/h)
-        if record.wind_gusts_kmh and record.wind_gusts_kmh >= 60.0:
+        if record.wind_gusts_kmh is not None and record.wind_gusts_kmh >= Decimal("60.0"):
             record.flag_storm = True
         
         # Severe storm (wind gusts >90 km/h)
-        if record.wind_gusts_kmh and record.wind_gusts_kmh >= 90.0:
+        if record.wind_gusts_kmh is not None and record.wind_gusts_kmh >= Decimal("90.0"):
             record.flag_severe_storm = True
         
         # Cold wave (<5°C)
-        if record.temp_c <= 5.0:
+        if record.temp_c is not None and record.temp_c <= Decimal("5.0"):
             record.flag_cold_wave = True
 
-    def _wind_to_cardinal(self, degrees: int) -> str:
+    def _wind_to_cardinal(self, degrees: int | float) -> str:
         """Convert wind direction degrees to cardinal direction."""
         directions = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"]
-        index = round(degrees / 45) % 8
+        index = round(float(degrees) / 45) % 8
         return directions[index]
 
     def _decode_weather_code(self, code: int | None) -> tuple[str | None, str | None]:
@@ -362,16 +404,32 @@ class OpenMeteoService:
                 day_offset = (summary_date - today).days
                 
                 # Extract values
-                temp_max_c = self._safe_get(daily_data.get("temperature_2m_max"), i)
-                temp_min_c = self._safe_get(daily_data.get("temperature_2m_min"), i)
-                feels_like_max_c = self._safe_get(daily_data.get("apparent_temperature_max"), i)
-                feels_like_min_c = self._safe_get(daily_data.get("apparent_temperature_min"), i)
-                precip_total_mm = self._safe_get(daily_data.get("precipitation_sum"), i, 0.0)
-                precip_prob_max_pct = self._safe_get(daily_data.get("precipitation_probability_max"), i)
-                wind_speed_max_kmh = self._safe_get(daily_data.get("wind_speed_10m_max"), i)
-                wind_gusts_max_kmh = self._safe_get(daily_data.get("wind_gusts_10m_max"), i)
-                uv_index_max = self._safe_get(daily_data.get("uv_index_max"), i)
+                # double precision columns: convert to float
+                temp_max_c = to_decimal(self._safe_get(daily_data.get("temperature_2m_max"), i))
+                temp_min_c = to_decimal(self._safe_get(daily_data.get("temperature_2m_min"), i))
+                feels_like_max_c = to_decimal(self._safe_get(daily_data.get("apparent_temperature_max"), i))
+                feels_like_min_c = to_decimal(self._safe_get(daily_data.get("apparent_temperature_min"), i))
                 
+                precip_total_mm = to_decimal(self._safe_get(daily_data.get("precipitation_sum"), i, 0.0))
+                rain_total_mm = to_decimal(self._safe_get(daily_data.get("rain_sum"), i))
+                snowfall_total_cm = to_decimal(self._safe_get(daily_data.get("snowfall_sum"), i))
+                precip_hours = self._safe_get(daily_data.get("precipitation_hours"), i)
+                precip_prob_max_pct = self._safe_get(daily_data.get("precipitation_probability_max"), i)
+                
+                wind_speed_max_kmh = to_decimal(self._safe_get(daily_data.get("wind_speed_10m_max"), i))
+                wind_gusts_max_kmh = to_decimal(self._safe_get(daily_data.get("wind_gusts_10m_max"), i))
+                wind_dir_dominant = self._safe_get(daily_data.get("wind_direction_10m_dominant"), i)
+                
+                uv_index_max = to_decimal(self._safe_get(daily_data.get("uv_index_max"), i))
+                
+                # Day Overview
+                weather_code_daily = self._safe_get(daily_data.get("weather_code"), i)
+                dominant_condition, _ = self._decode_weather_code(weather_code_daily)
+                
+                # daylight_duration is in seconds, convert to hours
+                daylight_duration_s = to_decimal(self._safe_get(daily_data.get("daylight_duration"), i))
+                daylight_hours = (daylight_duration_s / Decimal("3600.0")).quantize(Decimal("0.01")) if daylight_duration_s is not None else None
+
                 # Parse sunrise/sunset
                 sunrise_str = self._safe_get(daily_data.get("sunrise"), i)
                 sunset_str = self._safe_get(daily_data.get("sunset"), i)
@@ -394,12 +452,19 @@ class OpenMeteoService:
                     feels_like_max_c=feels_like_max_c,
                     feels_like_min_c=feels_like_min_c,
                     precip_total_mm=precip_total_mm,
+                    rain_total_mm=rain_total_mm,
+                    snowfall_total_cm=snowfall_total_cm,
+                    precip_hours=precip_hours,
                     precip_prob_max_pct=precip_prob_max_pct,
                     wind_speed_max_kmh=wind_speed_max_kmh,
                     wind_gusts_max_kmh=wind_gusts_max_kmh,
+                    wind_dominant_cardinal=self._wind_to_cardinal(wind_dir_dominant) if wind_dir_dominant is not None else None,
                     uv_index_max=uv_index_max,
                     sunrise_at=sunrise_at,
                     sunset_at=sunset_at,
+                    daylight_hours=daylight_hours,
+                    dominant_condition=dominant_condition,
+                    weather_code_dominant=weather_code_daily,
                 )
                 
                 # Set daily flags
@@ -416,19 +481,19 @@ class OpenMeteoService:
 
     def _set_daily_flags(self, summary: WeatherDailySummaryBase) -> None:
         """Set daily weather flags based on thresholds."""
-        if summary.temp_max_c >= 45.0:
+        if summary.temp_max_c is not None and summary.temp_max_c >= Decimal("45.0"):
             summary.flag_extreme_heat_day = True
         
-        if summary.temp_max_c >= 40.0:
+        if summary.temp_max_c is not None and summary.temp_max_c >= Decimal("40.0"):
             summary.flag_heatwave_day = True
         
-        if summary.precip_total_mm >= 50.0:
+        if summary.precip_total_mm is not None and summary.precip_total_mm >= Decimal("50.0"):
             summary.flag_heavy_rain_day = True
         
-        if summary.wind_gusts_max_kmh and summary.wind_gusts_max_kmh >= 60.0:
+        if summary.wind_gusts_max_kmh is not None and summary.wind_gusts_max_kmh >= Decimal("60.0"):
             summary.flag_storm_day = True
         
-        if summary.temp_min_c <= 5.0:
+        if summary.temp_min_c is not None and summary.temp_min_c <= Decimal("5.0"):
             summary.flag_cold_wave_day = True
 
     # ── Breach Detection ──────────────────────────────────────────
@@ -436,7 +501,7 @@ class OpenMeteoService:
     async def check_breach(
         self,
         record: WeatherHourlyWindowBase,
-    ) -> tuple[bool, str | None, str | None, float | None]:
+    ) -> tuple[bool, str | None, str | None, Decimal | None]:
         """Check if weather metrics cross thresholds.
         
         Args:
@@ -488,12 +553,16 @@ class OpenMeteoService:
         self,
         hourly_records: list[WeatherHourlyWindowBase],
         daily_summaries: list[WeatherDailySummaryBase],
+        cycle_id: UUID | None = None,
+        data_freshness_minutes: int | None = None,
     ) -> dict[str, int]:
         """Process weather data for a location: check breaches and UPSERT.
         
         Args:
             hourly_records: List of hourly weather records.
             daily_summaries: List of daily weather summaries.
+            cycle_id: Unique ID for current collection cycle.
+            data_freshness_minutes: Stale data warning threshold.
         
         Returns:
             Dictionary with processing statistics.
@@ -508,6 +577,10 @@ class OpenMeteoService:
         # Process hourly records
         for record in hourly_records:
             try:
+                # Assign metadata
+                record.cycle_id = cycle_id
+                record.data_freshness_minutes = data_freshness_minutes
+                
                 # Check for breach
                 has_breach, severity, metric, value = await self.check_breach(record)
                 record.has_breach = has_breach
@@ -530,6 +603,10 @@ class OpenMeteoService:
         # Process daily summaries
         for summary in daily_summaries:
             try:
+                # Assign metadata
+                summary.cycle_id = cycle_id
+                summary.data_freshness_minutes = data_freshness_minutes
+                
                 await self.weather_repo.upsert_daily(summary)
                 stats["daily_upserted"] += 1
             except Exception as e:

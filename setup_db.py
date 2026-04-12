@@ -2,9 +2,12 @@ import asyncio
 import asyncpg
 import os
 
+from app.core.config import get_settings
+
 async def main():
-    dsn = "postgresql://postgres.ncceiwuskeergtfauojc:Jaw246ahmed%40@aws-1-ap-south-1.pooler.supabase.com:6543/postgres"
-    print(f"Connecting to {dsn}...")
+    settings = get_settings()
+    dsn = settings.database_dsn
+    print(f"Connecting to {settings.collection_db_host} (Project: {settings.collection_db_user})...")
     conn = await asyncpg.connect(dsn)
     
     with open("database_schema.sql", "r", encoding="utf-8") as f:

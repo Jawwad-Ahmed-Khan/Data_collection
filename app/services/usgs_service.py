@@ -140,14 +140,23 @@ class USGSService:
         # Extract optional fields
         magnitude_type = properties.get("magType")
         usgs_place = properties.get("place")
+        usgs_event_url = properties.get("url")
         felt_reports = properties.get("felt")
         cdi = properties.get("cdi")
         mmi = properties.get("mmi")
         tsunami_flag = properties.get("tsunami", 0) == 1
         usgs_alert_level = properties.get("alert")
         significance = properties.get("sig")
-        data_quality = self._map_status_to_quality(properties.get("status", "automatic"))
+        station_count = properties.get("nst")
+        azimuthal_gap_deg = to_decimal(properties.get("gap"))
+        rms_seconds = to_decimal(properties.get("rms"))
         
+        # contributing_networks is often a comma-separated string like ",us,ak,ci," or just "us"
+        sources_str = properties.get("sources", "")
+        contributing_networks = [s.strip() for s in sources_str.split(",") if s.strip()] if sources_str else None
+        
+        data_quality = self._map_status_to_quality(properties.get("status", "automatic"))
+        usgs_last_updated_at = self._convert_usgs_time(properties.get("updated")) if properties.get("updated") else None
         # Classify magnitude and depth
         magnitude_class = self._classify_magnitude(magnitude)
         depth_class = self._classify_depth(depth_km)
@@ -162,6 +171,7 @@ class USGSService:
         # Create event object
         event = SeismicEventBase(
             usgs_event_id=usgs_event_id,
+            usgs_event_url=usgs_event_url,
             magnitude=magnitude,
             magnitude_type=magnitude_type,
             magnitude_class=magnitude_class,
@@ -180,8 +190,13 @@ class USGSService:
             tsunami_flag=tsunami_flag,
             usgs_alert_level=usgs_alert_level,
             significance=significance,
+            station_count=station_count,
+            azimuthal_gap_deg=azimuthal_gap_deg,
+            rms_seconds=rms_seconds,
+            contributing_networks=contributing_networks,
             data_quality=data_quality,
             earthquake_time=earthquake_time,
+            usgs_last_updated_at=usgs_last_updated_at,
             has_breach=False,  # Will be set by breach check
             breach_severity=None,
         )

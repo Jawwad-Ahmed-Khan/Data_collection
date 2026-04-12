@@ -107,6 +107,7 @@ class OpenMeteoCollector(BaseCollector):
     async def collect_location(
         self,
         location: PakistanLocation,
+        cycle_id: UUID | None = None,
     ) -> dict[str, Any]:
         """Collect weather data for a single location.
         
@@ -159,6 +160,8 @@ class OpenMeteoCollector(BaseCollector):
             process_stats = await self.openmeteo_service.process_location(
                 hourly_records=hourly_records,
                 daily_summaries=daily_summaries,
+                cycle_id=cycle_id,
+                data_freshness_minutes=30,  # Default threshold
             )
             
             stats["success"] = True
@@ -224,7 +227,7 @@ class OpenMeteoCollector(BaseCollector):
                 for i, location in enumerate(due_locations):
                     try:
                         # Collect location data
-                        location_stats = await self.collect_location(location)
+                        location_stats = await self.collect_location(location, cycle_id=cycle_id)
                         
                         if location_stats["success"]:
                             self.increment_success()
