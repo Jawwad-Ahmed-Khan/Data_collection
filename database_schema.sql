@@ -473,6 +473,7 @@ CREATE TABLE pakistan_infrastructure (
     serves_population   INT,
 
     data_source         VARCHAR(100),
+    external_id         VARCHAR(255) UNIQUE,
     last_verified_at    TIMESTAMPTZ,
 
     is_active           BOOLEAN NOT NULL DEFAULT TRUE,
@@ -1560,7 +1561,7 @@ BEGIN
         NEW.forecast_for_datetime AT TIME ZONE 'Asia/Karachi'
     );
     NEW.day_offset := (
-        NEW.forecast_date - CURRENT_DATE
+        NEW.forecast_date - (now() AT TIME ZONE 'Asia/Karachi')::DATE
     )::SMALLINT;
 
     -- Reject rows outside the 6-day window
@@ -1586,7 +1587,7 @@ CREATE TRIGGER trg_weather_day_offset
 CREATE OR REPLACE FUNCTION compute_daily_summary_offset()
 RETURNS TRIGGER AS $$
 BEGIN
-    NEW.day_offset := (NEW.summary_date - CURRENT_DATE)::SMALLINT;
+    NEW.day_offset := (NEW.summary_date - (now() AT TIME ZONE 'Asia/Karachi')::DATE)::SMALLINT;
 
     IF NEW.day_offset < 0 OR NEW.day_offset > 5 THEN
         RAISE EXCEPTION
@@ -1612,7 +1613,7 @@ BEGIN
     NEW.forecast_date  := DATE(
         NEW.forecast_for_datetime AT TIME ZONE 'Asia/Karachi'
     );
-    NEW.day_offset     := (NEW.forecast_date - CURRENT_DATE)::SMALLINT;
+    NEW.day_offset     := (NEW.forecast_date - (now() AT TIME ZONE 'Asia/Karachi')::DATE)::SMALLINT;
     NEW.forecast_horizon_h := EXTRACT(
         EPOCH FROM (NEW.forecast_for_datetime - now())
     )::INT / 3600;

@@ -14,8 +14,8 @@ class FloodGaugeRegistryBase(BaseModel):
     gauge_name: str
     river_name: str
     river_system: str | None = None
-    district: str
-    province: str
+    district: str | None = None
+    province: str | None = None
     latitude: float
     longitude: float
     historical_max_m: float | None = None
@@ -23,6 +23,9 @@ class FloodGaugeRegistryBase(BaseModel):
     basin_name: str | None = None
     upstream_area_sqkm: float | None = None
     nearest_location_id: UUID | None = None
+    warning_level_m: float | None = None
+    danger_level_m: float | None = None
+    extreme_level_m: float | None = None
     poll_priority: Literal["critical", "high", "normal"] = "normal"
     is_active: bool = True
 
@@ -32,13 +35,13 @@ class FloodGaugeRegistry(FloodGaugeRegistryBase):
 
 
 class FloodGaugeCurrentBase(BaseModel):
-    gauge_id: str
+    gauge_id: UUID | str
     google_gauge_id: str
     gauge_name: str
     river_name: str
     river_system: str | None = None
-    district: str
-    province: str
+    district: str | None = None
+    province: str | None = None
     reading_time: datetime
     current_level_m: float
     warning_level_m: float | None = None
@@ -59,13 +62,18 @@ class FloodGaugeCurrentBase(BaseModel):
 
 
 class FloodGaugeCurrent(FloodGaugeCurrentBase):
-    last_updated_at: datetime
+    collected_at: datetime
 
 
 class FloodGaugeForecastBase(BaseModel):
-    gauge_id: str
+    gauge_id: UUID | str
     google_gauge_id: str
+    gauge_name: str | None = None
+    river_name: str
+    district: str | None = None
+    province: str | None = None
     forecast_for_datetime: datetime
+    forecast_issued_at: datetime
     forecast_date: date
     day_offset: int
     forecast_horizon_h: int
@@ -76,7 +84,7 @@ class FloodGaugeForecastBase(BaseModel):
     prob_exceeds_danger_pct: float | None = None
     forecast_status: Literal["no_flooding", "watch", "warning", "emergency"] = "no_flooding"
     worst_case_status: Literal["no_flooding", "watch", "warning", "emergency"] = "no_flooding"
-    has_breach: bool = False
+    has_forecast_breach: bool = False
     breach_severity: Literal["watch", "warning", "emergency", "extreme"] | None = None
 
 

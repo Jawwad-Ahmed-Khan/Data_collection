@@ -18,6 +18,13 @@ async def run_extraction():
     # the database, all collectors, algorithms, and caches!
     async with lifespan(app):
         print("\n" + "="*50)
+        print("FORCING MANUAL GOOGLE FLOOD HUB EXTRACTION CYCLE")
+        print("="*50)
+        
+        flood_current_result = await m._floodhub_collector.collect_current_readings()
+        flood_forecast_result = await m._floodhub_collector.collect_forecasts()
+        
+        print("\n" + "="*50)
         print("FORCING MANUAL USGS SEISMIC EXTRACTION CYCLE")
         print("="*50)
         

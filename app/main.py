@@ -143,7 +143,7 @@ async def lifespan(app: FastAPI):
     # Load flood gauges (for future flood collector)
     flood_gauges_data = await _db_pool.fetch_many(
         """
-        SELECT gauge_id, google_gauge_id, gauge_name, river_name,
+        SELECT gauge_id, google_gauge_id, gauge_name, river_name, river_system,
                latitude, longitude, district, province
         FROM flood_gauge_registry
         WHERE is_active = TRUE

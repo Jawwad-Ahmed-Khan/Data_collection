@@ -158,7 +158,7 @@ class USGSCollector(BaseCollector):
             events = self.usgs_service.parse_usgs_response(geojson)
             
             # Process events (check breaches, UPSERT to database)
-            process_stats = await self.usgs_service.process_events(events)
+            process_stats = await self.usgs_service.process_events(events, cycle_id=cycle_id)
             
             events_upserted = process_stats["events_upserted"]
             breaches_detected = process_stats["breaches_detected"]

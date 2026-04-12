@@ -1,0 +1,122 @@
+[
+  {
+    "google_gauge_id": "hybas_2120071260",
+    "gauge_name": "Unnamed",
+    "lat": 25.381249999998715,
+    "lon": 65.49374999999606
+  },
+  {
+    "google_gauge_id": "hybas_2120071690",
+    "gauge_name": "Unnamed",
+    "lat": 25.177083333332007,
+    "lon": 61.6729166666629
+  },
+  {
+    "google_gauge_id": "hybas_2120085550",
+    "gauge_name": "Unnamed",
+    "lat": 28.23541666666523,
+    "lon": 62.98958333332939
+  },
+  {
+    "google_gauge_id": "hybas_2120085750",
+    "gauge_name": "Unnamed",
+    "lat": 29.172916666665287,
+    "lon": 64.79791666666273
+  },
+  {
+    "google_gauge_id": "hybas_2120086380",
+    "gauge_name": "Unnamed",
+    "lat": 29.08124999999876,
+    "lon": 65.17291666666273
+  },
+  {
+    "google_gauge_id": "hybas_2120806470",
+    "gauge_name": "Unnamed",
+    "lat": 31.52291666666531,
+    "lon": 67.54791666666273
+  },
+  {
+    "google_gauge_id": "hybas_2120823570",
+    "gauge_name": "Unnamed",
+    "lat": 30.68541666666539,
+    "lon": 66.931249999996
+  },
+  {
+    "google_gauge_id": "hybas_2120825110",
+    "gauge_name": "Unnamed",
+    "lat": 30.6104166666654,
+    "lon": 66.65624999999613
+  },
+  {
+    "google_gauge_id": "hybas_2120825720",
+    "gauge_name": "Unnamed",
+    "lat": 30.58958333333192,
+    "lon": 66.78124999999602
+  },
+  {
+    "google_gauge_id": "hybas_2120827780",
+    "gauge_name": "Unnamed",
+    "lat": 30.477083333332075,
+    "lon": 66.92708333332939
+  },
+  {
+    "google_gauge_id": "hybas_2120828060",
+    "gauge_name": "Unnamed",
+    "lat": 30.46458333333203,
+    "lon": 66.68541666666266
+  },
+  {
+    "google_gauge_id": "hybas_2120828490",
+    "gauge_name": "Unnamed",
+    "lat": 30.443749999998715,
+    "lon": 66.66874999999618
+  },
+  {
+    "google_gauge_id": "hybas_2120829830",
+    "gauge_name": "Unnamed",
+    "lat": 30.368749999998727,
+    "lon": 66.36458333332934
+  },
+  {
+    "google_gauge_id": "hybas_2120830950",
+    "gauge_name": "Unnamed",
+    "lat": 30.32708333333187,
+    "lon": 66.6145833333295
+  },
+  {
+    "google_gauge_id": "hybas_2120832160",
+    "gauge_name": "Unnamed",
+    "lat": 30.26041666666532,
+    "lon": 66.5020833333295
+  },
+  {
+    "google_gauge_id": "hybas_2120832780",
+    "gauge_name": "Unnamed",
+    "lat": 30.2229166666653,
+    "lon": 66.41874999999607
+  },
+  {
+    "google_gauge_id": "hybas_2120834670",
+    "gauge_name": "Unnamed",
+    "lat": 30.143749999998704,
+    "lon": 66.52708333332941
+  },
+  {
+    "google_gauge_id": "hybas_2120835840",
+    "gauge_name": "Unnamed",
+    "lat": 30.085416666665367,
+    "lon": 66.52291666666281
+  },
+  {
+    "google_gauge_id": "hybas_2120836340",
+    "gauge_name": "Unnamed",
+    "lat": 30.052083333332007,
+    "lon": 66.52291666666281
+  },
+  {
+    "google_gauge_id": "hybas_2120836450",
+    "gauge_name": "Unnamed",
+    "lat": 30.0479166666654,
+    "lon": 66.53124999999608
+  }
+]

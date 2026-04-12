@@ -15,6 +15,7 @@ Key responsibilities:
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
@@ -30,6 +31,20 @@ logger = get_logger(__name__)
 
 # Pakistan Standard Time
 _PKT = ZoneInfo("Asia/Karachi")
+
+
+def to_decimal(value: Any) -> Decimal | None:
+    """
+    Safely convert value to Decimal.
+    
+    Returns None if input is None or invalid.
+    """
+    if value is None:
+        return None
+    try:
+        return Decimal(str(value))
+    except (ValueError, TypeError):
+        return None
 
 
 class USGSService:
@@ -421,7 +436,11 @@ class USGSService:
 
     # ── Event Processing ──────────────────────────────────────────
 
-    async def process_events(self, events: list[SeismicEventBase]) -> dict[str, int]:
+    async def process_events(
+        self, 
+        events: list[SeismicEventBase], 
+        cycle_id: UUID | None = None
+    ) -> dict[str, int]:
         """Process parsed events: check breaches and UPSERT to database.
         
         Args:
@@ -448,7 +467,7 @@ class USGSService:
                     stats["breaches_detected"] += 1
                 
                 # UPSERT event to database
-                event_id = await self.seismic_repo.upsert_event(event)
+                event_id = await self.seismic_repo.upsert_event(event, cycle_id=cycle_id)
                 stats["events_upserted"] += 1
                 
                 logger.debug(

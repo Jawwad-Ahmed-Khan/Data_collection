@@ -15,10 +15,9 @@ async def seed_synthetic_data():
         # 1. Flood Gauge Registry
         print("Seeding Flood Gauge Registry...")
         gauges = [
-            # Google Flood Hub uses somewhat opaque IDs, we'll use synthetic realistic looking ones
-            ("Ravi River", "Lahore", "gfh_ravi_lhr_01", "Ravi Siphon Gauge", 31.5497, 74.3436, "Punjab", 215.0, 218.0, 220.0),
-            ("Soan River", "Islamabad", "gfh_soan_isb_01", "Soan Bridge Gauge", 33.6844, 73.0479, "Islamabad Capital Territory", 420.0, 425.0, 428.0),
-            ("Malir River", "Karachi", "gfh_malir_khi_01", "Malir Basin Gauge", 24.8607, 67.0011, "Sindh", 12.0, 15.0, 18.0)
+            # Real Google Flood Hub IDs for Pakistan
+            ("Kabul River", "Nowshera", "hybas_4120647980", "Nowshera Gauge", 33.91458, 72.28542, "khyber_pakhtunkhwa", 280.0, 285.0, 290.0),
+            ("Malir River", "Karachi", "hybas_4120033770", "Karachi Malir Gauge", 24.80208, 67.08125, "sindh", 12.0, 15.0, 18.0)
         ]
         
         for g in gauges:
@@ -30,14 +29,16 @@ async def seed_synthetic_data():
             await conn.execute("""
                 INSERT INTO flood_gauge_registry (
                     google_gauge_id, gauge_name, river_name, coordinates, latitude, longitude,
-                    district, nearest_location_id, warning_level_m, danger_level_m, extreme_level_m, poll_priority
+                    province, district, nearest_location_id, warning_level_m, danger_level_m, extreme_level_m, poll_priority
                 ) VALUES (
                     $1, $2, $3, ST_SetSRID(ST_MakePoint($5, $4), 4326), $4, $5,
-                    $6, $7, $8, $9, $10, 'high'
+                    $11, $6, $7, $8, $9, $10, 'high'
                 ) ON CONFLICT (google_gauge_id) DO UPDATE SET
                     gauge_name = EXCLUDED.gauge_name,
-                    river_name = EXCLUDED.river_name;
-            """, gid, name, river, lat, lon, loc_name, loc_id, warn, danger, ext)
+                    river_name = EXCLUDED.river_name,
+                    province = EXCLUDED.province,
+                    district = EXCLUDED.district;
+            """, gid, name, river, lat, lon, loc_name, loc_id, warn, danger, ext, prov)
         
         # 2. Pakistan Infrastructure
         print("Seeding Pakistan Infrastructure...")

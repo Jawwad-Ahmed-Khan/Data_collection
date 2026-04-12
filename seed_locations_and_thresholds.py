@@ -22,6 +22,11 @@ async def seed_data():
             ("lahore_31.5497_74.3436", "Lahore", "لاہور", "tier_1_provincial_capital", "Lahore", "Lahore", "punjab", 31.5497, 74.3436, "II", 11126285, "zone_1_low", "zone_3_high", "moderate"),
             ("karachi_24.8607_67.0011", "Karachi", "کراچی", "tier_1_provincial_capital", "Karachi", "Karachi", "sindh", 24.8607, 67.0011, "III", 16051521, "zone_2_moderate", "zone_5_critical", "low"),
             ("islamabad_33.6844_73.0479", "Islamabad", "اسلام آباد", "tier_1_provincial_capital", "Islamabad", "Islamabad", "islamabad_capital_territory", 33.6844, 73.0479, "III", 1014825, "zone_1_low", "zone_2_moderate", "moderate"),
+            ("peshawar_34.0150_71.5249", "Peshawar", "پشاور", "tier_1_provincial_capital", "Peshawar", "Peshawar", "khyber_pakhtunkhwa", 34.0150, 71.5249, "IV", 1970042, "zone_2_moderate", "zone_2_moderate", "moderate"),
+            ("quetta_30.1798_66.9750", "Quetta", "کوئٹہ", "tier_1_provincial_capital", "Quetta", "Quetta", "balochistan", 30.1798, 66.9750, "IV", 1001205, "zone_1_low", "zone_3_high", "low"),
+            ("multan_30.1575_71.5249", "Multan", "ملتان", "tier_2_district_headquarters", "Multan", "Multan", "punjab", 30.1575, 71.5249, "II", 1871843, "zone_1_low", "zone_4_very_high", "moderate"),
+            ("faisalabad_31.4504_73.1350", "Faisalabad", "فیصل آباد", "tier_2_district_headquarters", "Faisalabad", "Faisalabad", "punjab", 31.4504, 73.1350, "II", 3203846, "zone_1_low", "zone_3_high", "moderate"),
+            ("hyderabad_25.3960_68.3578", "Hyderabad", "حیدرآباد", "tier_2_district_headquarters", "Hyderabad", "Hyderabad", "sindh", 25.3960, 68.3578, "II", 1734302, "zone_2_moderate", "zone_4_very_high", "low"),
         ]
         
         thresholds = [

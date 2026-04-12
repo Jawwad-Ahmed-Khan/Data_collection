@@ -10,6 +10,7 @@ If the database driver ever changes, only this file needs updating.
 from __future__ import annotations
 
 import asyncpg
+from decimal import Decimal
 
 from app.core.config import Settings
 from app.core.exceptions import DatabaseConnectionError, DatabaseError
@@ -25,6 +26,7 @@ class DatabasePool:
     """Async PostgreSQL connection pool powered by asyncpg.
 
     Sets timezone to Asia/Karachi on every connection.
+    Registers Decimal codec for numeric type handling.
     Provides simple fetch/execute methods used by all repositories.
     """
 
@@ -32,12 +34,65 @@ class DatabasePool:
         self._settings = settings
         self._pool: asyncpg.Pool | None = None
 
+    # ── Connection Initialization ─────────────────────────────────
+
+    async def _init_connection(self, conn: asyncpg.Connection) -> None:
+        """Initialize each connection with custom type handlers.
+        
+        Registers codecs for:
+        - Decimal: PostgreSQL numeric type (no precision loss)
+        - ENUM types: magnitude_class, depth_class, breach_level, etc.
+        """
+        # Register Decimal codec for numeric/decimal columns
+        await conn.set_type_codec(
+            'numeric',
+            encoder=lambda x: str(x) if x is not None else None,
+            decoder=lambda x: Decimal(x) if x is not None else None,
+            schema='pg_catalog'
+        )
+        
+        # Register ENUM codecs for seismic and weather types
+        # These ENUMs are defined in the public schema
+        enum_types = [
+            'magnitude_class',
+            'depth_class',
+            'seismic_data_quality',
+            'breach_level',
+            'flood_status',
+            'river_trend',
+            'weather_condition',
+            'api_source_name',
+            'api_health_state',
+            'cycle_status',
+            'poll_outcome',
+            'pk_province',
+            'location_tier',
+            'poll_priority',
+            'asset_type',
+            'vulnerability_level',
+            'risk_zone',
+            'disaster_kind',
+            'breach_dispatch_status',
+        ]
+        
+        for enum_type in enum_types:
+            try:
+                await conn.set_type_codec(
+                    enum_type,
+                    encoder=lambda x: str(x) if x is not None else None,
+                    decoder=lambda x: str(x) if x is not None else None,
+                    schema='public'
+                )
+            except Exception as e:
+                # Some enums might not exist in this connection, that's ok
+                logger.debug("Could not register codec for %s: %s", enum_type, str(e))
+
     # ── Lifecycle ─────────────────────────────────────────────────
 
     async def connect(self) -> None:
         """Create the asyncpg connection pool.
 
-        Sets timezone to Asia/Karachi on every connection via the init callback.
+        Sets timezone to Asia/Karachi and registers Decimal codec on every connection.
         Refuses to start if the pool cannot be created.
         """
         try:
@@ -48,6 +103,7 @@ class DatabasePool:
                 server_settings={"timezone": _PKT_TIMEZONE},
                 ssl="require",
                 statement_cache_size=0,
+                init=self._init_connection,
             )
             logger.info(
                 "Database pool created: min=%d, max=%d, timezone=%s",
@@ -139,7 +195,7 @@ class DatabasePool:
 
         Args:
             query: SQL query string with positional $1, $2, ... placeholders.
-            *args: Values to substitute for placeholders.
+            *args: Values to substitute for placeholders (including Decimal objects).
 
         Returns:
             Status string from asyncpg (e.g., "INSERT 0 1", "UPDATE 3").

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=[".env", "../.env"],
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
         description="USGS earthquake API endpoint",
     )
     usgs_min_magnitude: float = Field(default=2.5, ge=0, le=10, description="Minimum earthquake magnitude to capture")
-    usgs_lookback_hours: int = Field(default=6, ge=1, le=24, description="Hours of overlap for USGS updates")
+    usgs_lookback_hours: int = Field(default=6, ge=1, le=1000, description="Hours of overlap for USGS updates")
     usgs_poll_interval_seconds: int = Field(default=60, ge=10, description="Seconds between USGS polls")
 
     # ── Open-Meteo Weather API ──────────────────────────────────
@@ -67,8 +67,8 @@ class Settings(BaseSettings):
 
     # ── Google Flood Hub API ────────────────────────────────────
     google_flood_hub_base_url: str = Field(
-        default="https://floodhub.googleapis.com/v1",
-        description="Google Flood Hub API endpoint",
+        default="https://floodforecasting.googleapis.com/v1",
+        description="Google Flood Forecasting API endpoint",
     )
     google_flood_hub_api_key: str = Field(..., description="Google Cloud API key for Flood Hub")
 

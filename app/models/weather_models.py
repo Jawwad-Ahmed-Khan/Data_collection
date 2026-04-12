@@ -109,5 +109,47 @@ class WeatherDailySummaryBase(BaseModel):
     data_freshness_minutes: int | None = None
 
 
-class WeatherDailySummary(WeatherDailySummaryBase):
-    last_updated_at: datetime
+class CurrentWeatherLocationBase(BaseModel):
+    location_id: UUID
+    location_key: str
+    location_name: str
+    temp_c: Decimal
+    temp_apparent_c: Decimal | None = None
+    precip_mm: Decimal | None = None
+    wind_speed_kmh: Decimal | None = None
+    humidity_pct: int | None = None
+    pressure_hpa: Decimal | None = None
+    weather_condition: str | None = None
+    weather_description: str | None = None
+    is_daytime: bool = True
+    observation_time: datetime
+    data_age_minutes: int | None = None
+    data_freshness: str | None = None
+
+
+class Weather5DaySummaryBase(BaseModel):
+    location_id: UUID
+    location_key: str
+    location_name: str
+    district: str
+    province: str
+    summary_date: date
+    day_offset: int
+    day_label: str | None = None
+    temp_max_c: Decimal
+    temp_min_c: Decimal
+    feels_like_max_c: Decimal | None = None
+    precip_total_mm: Decimal
+    precip_prob_max_pct: int | None = None
+    wind_speed_max_kmh: Decimal | None = None
+    wind_gusts_max_kmh: Decimal | None = None
+    uv_index_max: Decimal | None = None
+    dominant_condition: str | None = None
+    sunrise_at: datetime | None = None
+    sunset_at: datetime | None = None
+    flag_extreme_heat_day: bool = False
+    flag_heatwave_day: bool = False
+    flag_heavy_rain_day: bool = False
+    flag_storm_day: bool = False
+    flag_cold_wave_day: bool = False
+    worst_breach_severity: Literal["watch", "warning", "emergency", "extreme"] | None = None
