@@ -50,3 +50,17 @@ GET_ACTIVE_LOCATIONS = """
     FROM pakistan_locations
     WHERE is_active = TRUE
 """
+
+UPDATE_LOCATION_POLL_STATE = """
+    UPDATE pakistan_locations
+    SET
+        last_polled_at = $2,
+        last_poll_outcome = $3::poll_outcome,
+        next_poll_due_at = $4,
+        consecutive_failures = CASE
+            WHEN $5 = TRUE THEN 0
+            ELSE consecutive_failures + 1
+        END,
+        updated_at = now()
+    WHERE location_id = $1
+"""

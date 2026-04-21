@@ -3,6 +3,7 @@ ClimaSync Collection Service — Reference Repository
 """
 
 from datetime import datetime
+from uuid import UUID
 
 from app.models.reference_models import ApiRegistry, DisasterThreshold, PakistanLocation
 from app.repositories.base_repository import BaseRepository
@@ -11,6 +12,7 @@ from app.database.queries.reference_queries import (
     UPDATE_API_BACKOFF,
     GET_ALL_THRESHOLDS,
     GET_ACTIVE_LOCATIONS,
+    UPDATE_LOCATION_POLL_STATE,
 )
 
 
@@ -37,3 +39,29 @@ class ReferenceRepository(BaseRepository):
         """Fetch all active monitoring locations."""
         rows = await self.db.fetch_many(GET_ACTIVE_LOCATIONS)
         return [PakistanLocation(**row) for row in rows]
+
+    async def update_location_poll_state(
+        self,
+        location_id: UUID,
+        last_polled_at: datetime,
+        last_poll_outcome: str,
+        next_poll_due_at: datetime,
+        reset_failures: bool = False,
+    ) -> None:
+        """Update location's poll state after collection attempt.
+        
+        Args:
+            location_id: UUID of the location.
+            last_polled_at: Timestamp of this poll.
+            last_poll_outcome: 'success' or 'failed'.
+            next_poll_due_at: When next poll should occur.
+            reset_failures: If True, reset consecutive_failures to 0.
+        """
+        await self.db.execute(
+            UPDATE_LOCATION_POLL_STATE,
+            location_id,
+            last_polled_at,
+            last_poll_outcome,
+            next_poll_due_at,
+            reset_failures,
+        )

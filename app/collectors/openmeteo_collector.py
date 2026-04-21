@@ -6,16 +6,20 @@ Polls Open-Meteo API for weather forecasts for all Pakistan locations.
 Key responsibilities:
   - Check every 15 minutes which locations are due for polling
   - Sort by poll_priority (critical first)
-  - Fetch hourly and daily weather data
-  - Apply 500ms rate limit delay between location calls
+  - Fetch hourly and daily weather data using BATCH API (multiple locations per call)
   - Track cycle metrics per location
+  - Update poll state after each successful collection
+
+OPTIMIZATION: Uses Open-Meteo's batch endpoint to fetch up to 10 locations
+per API call, reducing total API calls by 10x.
 """
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -34,6 +38,9 @@ settings = get_settings()
 
 # Pakistan Standard Time
 _PKT = ZoneInfo("Asia/Karachi")
+
+# Open-Meteo batch API allows up to 10 locations per request
+_BATCH_SIZE = 10
 
 
 class OpenMeteoCollector(BaseCollector):
@@ -86,113 +93,258 @@ class OpenMeteoCollector(BaseCollector):
         due_locations = []
         
         for location in self.pakistan_locations:
+            # Skip inactive locations
+            if not location.is_active:
+                continue
+            
             # Check if location is due for polling
-            # Note: In real implementation, next_poll_due_at would be loaded from database
-            # For now, we'll poll all active locations
-            if location.is_active:
+            # Poll if: next_poll_due_at is None OR next_poll_due_at <= now
+            if location.next_poll_due_at is None or location.next_poll_due_at <= now:
                 due_locations.append(location)
         
         # Sort by poll_priority (critical > high > medium > low)
         priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
         
-        # Note: poll_priority not in PakistanLocation model, so we'll sort by name for now
-        # In full implementation, this would be loaded from database
-        due_locations.sort(key=lambda loc: loc.location_name)
+        # Use poll_priority if available, otherwise default to medium (2)
+        due_locations.sort(
+            key=lambda loc: priority_order.get(
+                getattr(loc, 'poll_priority', 'medium'), 
+                2
+            )
+        )
         
-        logger.info("Found %d locations due for polling", len(due_locations))
+        logger.info(
+            "Found %d locations due for polling (out of %d total active)",
+            len(due_locations),
+            sum(1 for loc in self.pakistan_locations if loc.is_active)
+        )
         return due_locations
 
-    # ── Location Collection ───────────────────────────────────────
+    # ── Batch Location Collection ─────────────────────────────────
 
-    async def collect_location(
+    async def collect_batch(
         self,
-        location: PakistanLocation,
+        locations: list[PakistanLocation],
         cycle_id: UUID | None = None,
     ) -> dict[str, Any]:
-        """Collect weather data for a single location.
+        """Collect weather data for multiple locations in a single API call.
+        
+        Open-Meteo supports batch requests with multiple lat/lon pairs.
+        This reduces API calls by 10x (up to 10 locations per request).
         
         Args:
-            location: Pakistan location to collect data for.
+            locations: List of Pakistan locations (max 10).
+            cycle_id: Unique ID for current collection cycle.
         
         Returns:
-            Dictionary with collection statistics.
+            Dictionary with batch collection statistics.
         """
+        if len(locations) > _BATCH_SIZE:
+            raise ValueError(f"Batch size cannot exceed {_BATCH_SIZE} locations")
+        
         stats = {
-            "location_name": location.location_name,
-            "success": False,
-            "hourly_count": 0,
-            "daily_count": 0,
-            "breaches": 0,
-            "error": None,
+            "locations_attempted": len(locations),
+            "locations_success": 0,
+            "locations_failed": 0,
+            "total_hourly": 0,
+            "total_daily": 0,
+            "total_breaches": 0,
+            "errors": {},
         }
         
+        poll_start_time = datetime.now(_PKT)
+        
         try:
-            # Build query parameters
-            hourly_params = self.openmeteo_service.build_hourly_params(
-                latitude=location.latitude,
-                longitude=location.longitude,
-            )
+            # Build batch query parameters
+            batch_params = self.openmeteo_service.build_batch_params(locations)
             
-            daily_params = self.openmeteo_service.build_daily_params(
-                latitude=location.latitude,
-                longitude=location.longitude,
-            )
-            
-            # Fetch hourly data
-            hourly_response = await self.get(
+            # Fetch batch data (single API call for all locations)
+            response = await self.get(
                 url=settings.openmeteo_base_url,
-                params=hourly_params,
+                params=batch_params,
             )
-            hourly_data = hourly_response.json()
+            batch_data = response.json()
             
-            # Fetch daily data
-            daily_response = await self.get(
-                url=settings.openmeteo_base_url,
-                params=daily_params,
-            )
-            daily_data = daily_response.json()
-            
-            # Parse data
-            hourly_records = self.openmeteo_service.parse_hourly(hourly_data, location)
-            daily_summaries = self.openmeteo_service.parse_daily(daily_data, location)
-            
-            # Process data (check breaches, UPSERT to database)
-            process_stats = await self.openmeteo_service.process_location(
-                hourly_records=hourly_records,
-                daily_summaries=daily_summaries,
-                cycle_id=cycle_id,
-                data_freshness_minutes=30,  # Default threshold
-            )
-            
-            stats["success"] = True
-            stats["hourly_count"] = process_stats["hourly_upserted"]
-            stats["daily_count"] = process_stats["daily_upserted"]
-            stats["breaches"] = process_stats["breaches_detected"]
-            
-            logger.debug(
-                "Collected weather for %s: %d hourly, %d daily, %d breaches",
-                location.location_name,
-                stats["hourly_count"],
-                stats["daily_count"],
-                stats["breaches"],
-            )
+            # Parse and process each location's data
+            for i, location in enumerate(locations):
+                try:
+                    # Extract this location's data from batch response
+                    location_data = self._extract_location_data(batch_data, i)
+                    
+                    # Parse hourly and daily data
+                    hourly_records = self.openmeteo_service.parse_hourly(
+                        location_data, 
+                        location
+                    )
+                    daily_summaries = self.openmeteo_service.parse_daily(
+                        location_data, 
+                        location
+                    )
+                    
+                    # Compute data freshness
+                    poll_end_time = datetime.now(_PKT)
+                    data_freshness_minutes = int(
+                        (poll_end_time - poll_start_time).total_seconds() / 60
+                    )
+                    
+                    # Process data (check breaches, UPSERT to database)
+                    process_stats = await self.openmeteo_service.process_location(
+                        hourly_records=hourly_records,
+                        daily_summaries=daily_summaries,
+                        cycle_id=cycle_id,
+                        data_freshness_minutes=data_freshness_minutes,
+                    )
+                    
+                    # Update poll state in database
+                    await self._update_poll_state(
+                        location=location,
+                        success=True,
+                        poll_time=poll_end_time,
+                    )
+                    
+                    stats["locations_success"] += 1
+                    stats["total_hourly"] += process_stats["hourly_upserted"]
+                    stats["total_daily"] += process_stats["daily_upserted"]
+                    stats["total_breaches"] += process_stats["breaches_detected"]
+                    
+                    logger.debug(
+                        "Processed %s: %d hourly, %d daily, %d breaches",
+                        location.location_name,
+                        process_stats["hourly_upserted"],
+                        process_stats["daily_upserted"],
+                        process_stats["breaches_detected"],
+                    )
+                    
+                except Exception as e:
+                    logger.error(
+                        "Failed to process location %s in batch: %s",
+                        location.location_name,
+                        str(e)
+                    )
+                    stats["locations_failed"] += 1
+                    stats["errors"][location.location_name] = str(e)
+                    
+                    # Update poll state as failed
+                    await self._update_poll_state(
+                        location=location,
+                        success=False,
+                        poll_time=datetime.now(_PKT),
+                    )
+                    continue
             
         except ApiResponseError as e:
-            logger.error("API error for %s: %s", location.location_name, str(e))
-            stats["error"] = str(e)
+            logger.error("Batch API error: %s", str(e))
+            # Mark all locations as failed
+            for location in locations:
+                stats["locations_failed"] += 1
+                stats["errors"][location.location_name] = str(e)
+                await self._update_poll_state(
+                    location=location,
+                    success=False,
+                    poll_time=datetime.now(_PKT),
+                )
             
         except Exception as e:
-            logger.error("Unexpected error for %s: %s", location.location_name, str(e))
-            stats["error"] = str(e)
+            logger.error("Unexpected batch error: %s", str(e))
+            # Mark all locations as failed
+            for location in locations:
+                stats["locations_failed"] += 1
+                stats["errors"][location.location_name] = str(e)
+                await self._update_poll_state(
+                    location=location,
+                    success=False,
+                    poll_time=datetime.now(_PKT),
+                )
         
         return stats
+
+    def _extract_location_data(
+        self, 
+        batch_data: dict[str, Any], 
+        index: int
+    ) -> dict[str, Any]:
+        """Extract single location's data from batch response.
+        
+        Open-Meteo batch response structure:
+        - If single location: returns normal response
+        - If multiple locations: returns array of responses
+        
+        Args:
+            batch_data: Full batch API response.
+            index: Index of location in batch (0-based).
+        
+        Returns:
+            Single location's weather data.
+        """
+        # Check if response is an array (multiple locations)
+        if isinstance(batch_data, list):
+            return batch_data[index]
+        
+        # Single location response
+        if index == 0:
+            return batch_data
+        
+        raise ValueError(f"Cannot extract index {index} from single-location response")
+
+    async def _update_poll_state(
+        self,
+        location: PakistanLocation,
+        success: bool,
+        poll_time: datetime,
+    ) -> None:
+        """Update location's poll state in database after collection attempt.
+        
+        Updates:
+        - last_polled_at: timestamp of this poll
+        - last_poll_outcome: 'success' or 'failed'
+        - next_poll_due_at: poll_time + poll_interval_minutes
+        - consecutive_failures: increment on failure, reset on success
+        
+        Args:
+            location: Location that was polled.
+            success: Whether poll succeeded.
+            poll_time: When the poll completed.
+        """
+        try:
+            # Get poll interval (default to 180 minutes if not set)
+            poll_interval_minutes = getattr(location, 'poll_interval_minutes', 180)
+            
+            # Calculate next poll time
+            next_poll_due_at = poll_time + timedelta(minutes=poll_interval_minutes)
+            
+            # Determine outcome
+            outcome = "success" if success else "failed"
+            
+            # Update database
+            await self.reference_repo.update_location_poll_state(
+                location_id=location.location_id,
+                last_polled_at=poll_time,
+                last_poll_outcome=outcome,
+                next_poll_due_at=next_poll_due_at,
+                reset_failures=success,
+            )
+            
+            logger.debug(
+                "Updated poll state for %s: outcome=%s, next_due=%s",
+                location.location_name,
+                outcome,
+                next_poll_due_at.strftime("%Y-%m-%d %H:%M:%S %Z"),
+            )
+            
+        except Exception as e:
+            logger.error(
+                "Failed to update poll state for %s: %s",
+                location.location_name,
+                str(e)
+            )
 
     # ── Collection Cycle ──────────────────────────────────────────
 
     async def collect(self) -> dict[str, Any]:
         """Execute one Open-Meteo collection cycle.
         
-        Polls all due locations with 500ms delay between calls.
+        Polls all due locations using batch API (up to 10 locations per call).
+        This reduces API calls by 10x compared to individual requests.
         
         Returns:
             Dictionary with cycle statistics.
@@ -215,7 +367,7 @@ class OpenMeteoCollector(BaseCollector):
         error_message = None
         
         try:
-            # Get locations due for polling
+            # Get locations due for polling (sorted by priority)
             due_locations = self.get_due_locations()
             self.locations_targeted = len(due_locations)
             
@@ -223,27 +375,47 @@ class OpenMeteoCollector(BaseCollector):
                 logger.info("No locations due for polling")
                 cycle_status = "skipped"
             else:
-                # Collect data for each location
-                for i, location in enumerate(due_locations):
+                # Split locations into batches of 10
+                batches = [
+                    due_locations[i:i + _BATCH_SIZE]
+                    for i in range(0, len(due_locations), _BATCH_SIZE)
+                ]
+                
+                logger.info(
+                    "Polling %d locations in %d batch(es) of up to %d locations each",
+                    len(due_locations),
+                    len(batches),
+                    _BATCH_SIZE,
+                )
+                
+                # Process each batch
+                for batch_num, batch in enumerate(batches, 1):
                     try:
-                        # Collect location data
-                        location_stats = await self.collect_location(location, cycle_id=cycle_id)
+                        logger.debug(
+                            "Processing batch %d/%d with %d locations",
+                            batch_num,
+                            len(batches),
+                            len(batch),
+                        )
                         
-                        if location_stats["success"]:
-                            self.increment_success()
-                            total_hourly += location_stats["hourly_count"]
-                            total_daily += location_stats["daily_count"]
-                            total_breaches += location_stats["breaches"]
-                        else:
-                            self.increment_failure()
+                        # Collect batch data (single API call)
+                        batch_stats = await self.collect_batch(batch, cycle_id=cycle_id)
                         
-                        # Rate limit delay (500ms between locations)
-                        if i < len(due_locations) - 1:  # Don't delay after last location
+                        # Update counters
+                        self.locations_success += batch_stats["locations_success"]
+                        self.locations_failed += batch_stats["locations_failed"]
+                        total_hourly += batch_stats["total_hourly"]
+                        total_daily += batch_stats["total_daily"]
+                        total_breaches += batch_stats["total_breaches"]
+                        
+                        # Rate limit delay between batches (500ms)
+                        if batch_num < len(batches):
                             await self.rate_limit_delay(settings.openmeteo_request_delay_ms)
                         
                     except Exception as e:
-                        logger.error("Failed to collect location %s: %s", location.location_name, str(e))
-                        self.increment_failure()
+                        logger.error("Failed to process batch %d: %s", batch_num, str(e))
+                        # Mark all locations in batch as failed
+                        self.locations_failed += len(batch)
                         continue
                 
                 # Determine cycle status
@@ -273,7 +445,8 @@ class OpenMeteoCollector(BaseCollector):
             )
             
             logger.info(
-                "Open-Meteo cycle %s completed: status=%s, locations=%d/%d, hourly=%d, daily=%d, breaches=%d",
+                "Open-Meteo cycle %s completed: status=%s, locations=%d/%d, "
+                "hourly=%d, daily=%d, breaches=%d, API_calls=%d",
                 cycle_id,
                 cycle_status,
                 self.locations_success,
@@ -281,6 +454,7 @@ class OpenMeteoCollector(BaseCollector):
                 total_hourly,
                 total_daily,
                 total_breaches,
+                (self.locations_targeted + _BATCH_SIZE - 1) // _BATCH_SIZE,  # Ceiling division
             )
         
         return {

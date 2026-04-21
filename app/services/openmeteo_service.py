@@ -78,6 +78,81 @@ class OpenMeteoService:
 
     # ── Query Parameter Building ──────────────────────────────────
 
+    def build_batch_params(
+        self,
+        locations: list[PakistanLocation],
+    ) -> dict[str, Any]:
+        """Build Open-Meteo batch query parameters for multiple locations.
+        
+        Open-Meteo supports batch requests by passing comma-separated
+        latitude and longitude values. This allows fetching up to 10
+        locations in a single API call.
+        
+        Args:
+            locations: List of Pakistan locations (max 10).
+        
+        Returns:
+            Dictionary of batch query parameters.
+        """
+        if len(locations) > 10:
+            raise ValueError("Open-Meteo batch API supports max 10 locations per request")
+        
+        # Extract coordinates
+        latitudes = [str(loc.latitude) for loc in locations]
+        longitudes = [str(loc.longitude) for loc in locations]
+        
+        # All hourly and daily variables
+        hourly_vars = [
+            "temperature_2m",
+            "apparent_temperature",
+            "dew_point_2m",
+            "precipitation",
+            "precipitation_probability",
+            "rain",
+            "snowfall",
+            "snow_depth",
+            "wind_speed_10m",
+            "wind_gusts_10m",
+            "wind_direction_10m",
+            "relative_humidity_2m",
+            "surface_pressure",
+            "visibility",
+            "cloud_cover",
+            "uv_index",
+            "cape",
+            "weather_code",
+            "is_day",
+        ]
+        
+        daily_vars = [
+            "temperature_2m_max",
+            "temperature_2m_min",
+            "apparent_temperature_max",
+            "apparent_temperature_min",
+            "precipitation_sum",
+            "rain_sum",
+            "snowfall_sum",
+            "precipitation_hours",
+            "precipitation_probability_max",
+            "wind_speed_10m_max",
+            "wind_gusts_10m_max",
+            "wind_direction_10m_dominant",
+            "uv_index_max",
+            "sunrise",
+            "sunset",
+            "daylight_duration",
+            "weather_code",
+        ]
+        
+        return {
+            "latitude": ",".join(latitudes),
+            "longitude": ",".join(longitudes),
+            "hourly": ",".join(hourly_vars),
+            "daily": ",".join(daily_vars),
+            "timezone": "Asia/Karachi",
+            "forecast_days": 5,
+        }
+
     def build_hourly_params(
         self,
         latitude: float,
@@ -337,6 +412,19 @@ class OpenMeteoService:
         # Cold wave (<5°C)
         if record.temp_c is not None and record.temp_c <= Decimal("5.0"):
             record.flag_cold_wave = True
+        
+        # Dust storm (weather code indicates dust + high wind)
+        # WMO codes for dust/sand: Not in standard codes, but we check for clear/haze + high wind
+        if record.wind_speed_kmh is not None and record.wind_speed_kmh >= Decimal("40.0"):
+            # Dust storm likely if high wind + low visibility + clear/haze conditions
+            if record.visibility_m is not None and record.visibility_m < 1000:
+                if record.weather_condition in ['clear', 'haze', 'partly_cloudy']:
+                    record.flag_dust_storm = True
+        
+        # Dense fog (weather code indicates fog + low visibility)
+        if record.weather_condition == 'fog':
+            if record.visibility_m is not None and record.visibility_m < 200:
+                record.flag_dense_fog = True
 
     def _wind_to_cardinal(self, degrees: int | float) -> str:
         """Convert wind direction degrees to cardinal direction."""
@@ -503,36 +591,186 @@ class OpenMeteoService:
 
     # ── Breach Detection ──────────────────────────────────────────
 
-    async def check_breach(
+    async def check_breaches(
         self,
         record: WeatherHourlyWindowBase,
-    ) -> tuple[bool, str | None, str | None, Decimal | None]:
-        """Check if weather metrics cross thresholds.
+    ) -> list[tuple[bool, str | None, str | None, Decimal | None, Decimal | None]]:
+        """Check if weather metrics cross thresholds for ALL disaster types.
+        
+        Checks for:
+        1. Heatwave (temp_max_c)
+        2. Heavy Rain (precip_1h_mm, precip_24h_mm, precip_72h_mm)
+        3. Cyclone/Storm (wind_gusts_kmh, cape_jkg)
+        4. Cold Wave (temp_min_c)
+        5. Dust Storm (wind_speed + visibility)
+        6. Flash Flood (precip_accumulation)
+        7. Drought (not applicable to hourly data)
         
         Args:
             record: Hourly weather record.
         
         Returns:
-            Tuple of (has_breach, severity, metric_name, observed_value).
+            List of tuples: (has_breach, severity, metric_name, observed_value, threshold_value)
         """
-        # Check temperature thresholds
-        threshold = self.breach_service.find_applicable_threshold(
-            metric_name="temp_max_c",
-            disaster_kind="heatwave",
-            province=record.province,
-            district=record.district,
-        )
+        breaches = []
         
-        if threshold:
-            severity = self.breach_service.check_breach(
-                value=record.temp_c,
-                threshold=threshold,
+        # 1. HEATWAVE - Check temperature thresholds
+        if record.temp_c is not None:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="temp_max_c",
+                disaster_kind="heatwave",
+                province=record.province,
+                district=record.district,
             )
             
-            if severity:
-                return True, severity, "temp_max_c", record.temp_c
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.temp_c),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "temp_max_c", record.temp_c, Decimal(str(threshold_value))))
         
-        return False, None, None, None
+        # 2. HEAVY RAIN - Check hourly precipitation
+        if record.precip_mm is not None and record.precip_mm > 0:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="precip_1h_mm",
+                disaster_kind="heavy_rain",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.precip_mm),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "precip_1h_mm", record.precip_mm, Decimal(str(threshold_value))))
+        
+        # 3. HEAVY RAIN - Check 24-hour accumulation
+        if record.precip_24h_mm is not None and record.precip_24h_mm > 0:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="precip_24h_mm",
+                disaster_kind="heavy_rain",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.precip_24h_mm),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "precip_24h_mm", record.precip_24h_mm, Decimal(str(threshold_value))))
+        
+        # 4. FLASH FLOOD - Check 72-hour accumulation
+        if record.precip_72h_mm is not None and record.precip_72h_mm > 0:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="precip_72h_mm",
+                disaster_kind="flash_flood",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.precip_72h_mm),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "precip_72h_mm", record.precip_72h_mm, Decimal(str(threshold_value))))
+        
+        # 5. CYCLONE/STORM - Check wind gusts
+        if record.wind_gusts_kmh is not None:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="wind_gusts_kmh",
+                disaster_kind="cyclone",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.wind_gusts_kmh),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "wind_gusts_kmh", record.wind_gusts_kmh, Decimal(str(threshold_value))))
+        
+        # 6. SEVERE STORM - Check CAPE (Convective Available Potential Energy)
+        if record.cape_jkg is not None and record.cape_jkg > 0:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="cape_jkg",
+                disaster_kind="cyclone",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.cape_jkg),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "cape_jkg", record.cape_jkg, Decimal(str(threshold_value))))
+        
+        # 7. COLD WAVE - Check minimum temperature
+        if record.temp_c is not None:
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="temp_min_c",
+                disaster_kind="cold_wave",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.temp_c),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "temp_min_c", record.temp_c, Decimal(str(threshold_value))))
+        
+        # 8. DUST STORM - Check wind speed + visibility combination
+        if (record.wind_speed_kmh is not None and 
+            record.visibility_m is not None and 
+            record.wind_speed_kmh >= Decimal("40.0") and 
+            record.visibility_m < 1000):
+            
+            threshold = self.breach_service.find_applicable_threshold(
+                metric_name="wind_speed_kmh",
+                disaster_kind="dust_storm",
+                province=record.province,
+                district=record.district,
+            )
+            
+            if threshold:
+                severity = self.breach_service.check_breach(
+                    value=float(record.wind_speed_kmh),
+                    threshold=threshold,
+                )
+                
+                if severity:
+                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
+                    breaches.append((True, severity, "wind_speed_kmh", record.wind_speed_kmh, Decimal(str(threshold_value))))
+        
+        return breaches
 
     # ── Data Processing ───────────────────────────────────────────
 
@@ -568,15 +806,32 @@ class OpenMeteoService:
                 record.cycle_id = cycle_id
                 record.data_freshness_minutes = data_freshness_minutes
                 
-                # Check for breach
-                has_breach, severity, metric, value = await self.check_breach(record)
-                record.has_breach = has_breach
-                record.breach_severity = severity
-                record.breach_metric = metric
-                record.breach_observed_value = value
+                # Check for ALL breach types
+                breaches = await self.check_breaches(record)
                 
-                if has_breach:
-                    stats["breaches_detected"] += 1
+                if breaches:
+                    # Find the most severe breach
+                    severity_order = {"extreme": 0, "emergency": 1, "warning": 2, "watch": 3}
+                    breaches.sort(key=lambda x: severity_order.get(x[1], 99))
+                    
+                    # Use the worst breach for the record
+                    worst_breach = breaches[0]
+                    record.has_breach = worst_breach[0]
+                    record.breach_severity = worst_breach[1]
+                    record.breach_metric = worst_breach[2]
+                    record.breach_observed_value = worst_breach[3]
+                    record.breach_threshold_value = worst_breach[4]
+                    
+                    stats["breaches_detected"] += len(breaches)
+                    
+                    logger.debug(
+                        "Detected %d breach(es) for %s at %s: worst=%s (%s)",
+                        len(breaches),
+                        record.location_name,
+                        record.forecast_for_datetime,
+                        worst_breach[2],
+                        worst_breach[1],
+                    )
                 
                 # UPSERT to database
                 await self.weather_repo.upsert_hourly(record)
@@ -602,6 +857,4 @@ class OpenMeteoService:
                 stats["errors"] += 1
                 continue
         
-        return stats
-
         return stats
