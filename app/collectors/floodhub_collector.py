@@ -2,15 +2,30 @@
 ClimaSync Collection Service — Google Flood Hub Collector
 
 Polls the Google Flood Forecasting API for river gauge data.
-Transitioned to V1 API Batch endpoints.
+Two separate collection methods:
+  - collect_current(): Current gauge readings (every 60 minutes)
+  - collect_forecast(): Probabilistic forecasts (every 6 hours)
+
+Both share the SAME api_registry entry for google_flood_hub.
 """
 
 import asyncio
+import logging
+import time
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import httpx
+from tenacity import (
+    before_sleep_log,
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
+
 from app.core.config import Settings, get_settings
-from app.core.exceptions import ApiResponseError
+from app.core.exceptions import ApiRateLimitError, ApiResponseError, APIUnavailableError
 from app.core.logger import get_logger
 from app.database.connection import DatabasePool
 from app.models.flood_models import FloodGaugeRegistry
@@ -26,13 +41,14 @@ _PKT = ZoneInfo("Asia/Karachi")
 
 class FloodHubCollector(BaseCollector):
     """Collector for Google Flood Hub data.
-    
-    Uses the Flood Forecasting API (v1) to fetch hydrologic forecasts and status.
+
+    Uses individual /gauges/{id} and /gauges/{id}/forecasts endpoints.
+    Exposes two separate collection methods for the scheduler.
     """
 
     def __init__(
         self,
-        http_client,
+        http_client: httpx.AsyncClient,
         reference_repo: ReferenceRepository,
         cycle_repo: CycleRepository,
         flood_repo: FloodRepository,
@@ -50,102 +66,416 @@ class FloodHubCollector(BaseCollector):
         self.flood_gauges = flood_gauges
         self.settings = get_settings()
 
-    async def collect_current_readings(self, force: bool = False) -> dict:
-        """Fetch latest floor levels for all active gauges.
-        
-        Using QueryGaugeForecasts to get the most recent point.
+    # ── HTTP Fetch Methods ─────────────────────────────────────────
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+        reraise=True,
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
+    async def _fetch_current_reading(self, google_gauge_id: str) -> dict | None:
+        """Fetch current reading for a specific gauge."""
+        url = f"{self.settings.google_flood_hub_base_url}/gauges/{google_gauge_id}"
+        logger.debug("Calling %s [auth=api_key]", url)
+
+        headers = {
+            "User-Agent": "ClimaSync.ai/1.0 Pakistan Disaster Monitor",
+            "Accept": "application/json"
+        }
+        params = {"key": self.settings.google_flood_hub_api_key}
+
+        try:
+            response = await self.http_client.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=httpx.Timeout(30.0, connect=10.0)
+            )
+
+            if response.status_code == 404:
+                logger.debug(f"Gauge {google_gauge_id} not found or no data (404).")
+                return None
+            elif response.status_code == 403:
+                logger.critical("CRITICAL: Invalid API Key for Google Flood Hub (403).")
+                raise APIUnavailableError("google_flood_hub", "Invalid API Key (HTTP 403)")
+            elif response.status_code == 429:
+                await self._handle_rate_limit(response)
+            elif 500 <= response.status_code < 600:
+                raise httpx.ConnectError(f"Server error {response.status_code}")
+
+            response.raise_for_status()
+
+            data = response.json()
+            if data.get('latestReading') is None:
+                logger.warning(f"Gauge {google_gauge_id} response missing latestReading.")
+                return None
+
+            return data
+
+        except httpx.HTTPStatusError as e:
+            if 500 <= e.response.status_code < 600:
+                raise httpx.ConnectError(f"Server Error {e.response.status_code}") from e
+            raise
+
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=30),
+        retry=retry_if_exception_type((httpx.TimeoutException, httpx.ConnectError)),
+        reraise=True,
+        before_sleep=before_sleep_log(logger, logging.WARNING)
+    )
+    async def _fetch_forecast(self, google_gauge_id: str) -> dict | None:
+        """Fetch forecasts for a specific gauge."""
+        url = f"{self.settings.google_flood_hub_base_url}/gauges/{google_gauge_id}/forecasts"
+        logger.debug("Calling %s [auth=api_key]", url)
+
+        headers = {
+            "User-Agent": "ClimaSync.ai/1.0 Pakistan Disaster Monitor",
+            "Accept": "application/json"
+        }
+        params = {"key": self.settings.google_flood_hub_api_key}
+
+        try:
+            response = await self.http_client.get(
+                url,
+                params=params,
+                headers=headers,
+                timeout=httpx.Timeout(30.0, connect=10.0)
+            )
+
+            if response.status_code == 404:
+                logger.debug(f"Forecast for {google_gauge_id} not found (404).")
+                return None
+            elif response.status_code == 403:
+                logger.critical("CRITICAL: Invalid API Key for Google Flood Hub (403).")
+                raise APIUnavailableError("google_flood_hub", "Invalid API Key (HTTP 403)")
+            elif response.status_code == 429:
+                await self._handle_rate_limit(response)
+            elif 500 <= response.status_code < 600:
+                raise httpx.ConnectError(f"Server error {response.status_code}")
+
+            response.raise_for_status()
+
+            data = response.json()
+            forecasts_list = data.get('forecasts')
+            if forecasts_list is None or not isinstance(forecasts_list, list) or len(forecasts_list) == 0:
+                logger.debug(f"Forecast for {google_gauge_id} is empty.")
+                return None
+
+            return data
+
+        except httpx.HTTPStatusError as e:
+            if 500 <= e.response.status_code < 600:
+                raise httpx.ConnectError(f"Server Error {e.response.status_code}") from e
+            raise
+
+    # ── Job 1: Current Reading Collection (every 60 min) ───────────
+
+    async def collect_current(self) -> dict:
+        """Execute flood current reading collection, gauge by gauge.
+
+        K4: If no active gauges, log WARNING and return without cycle.
+        L1: Backoff is checked before EACH gauge, not just at cycle start.
         """
+        # K4. Empty active gauges
         if not self.flood_gauges:
+            logger.warning("No active flood gauges found — skipping flood_current cycle")
             return {"status": "skipped", "reason": "no_gauges"}
 
         api_config = await self._load_api_config()
-        cycle_id = await self.cycle_repo.start_cycle(str(api_config.api_id), "google_flood_hub")
-        stats = {"total": len(self.flood_gauges), "success": 0, "failed": 0, "breaches": 0}
+
+        # L1/L4. Check persisted backoff before starting cycle
+        if await self._check_backoff():
+            cycle_id = await self.cycle_repo.start_cycle(
+                str(api_config.api_id), "google_flood_hub", "flood_current"
+            )
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status="skipped",
+                failure_reason="API in backoff period",
+                locations_targeted=len(self.flood_gauges),
+            )
+            return {"status": "skipped", "reason": "backoff"}
+
+        cycle_id = await self.cycle_repo.start_cycle(
+            str(api_config.api_id), "google_flood_hub", "flood_current"
+        )
+
+        stats = {
+            "locations_targeted": len(self.flood_gauges),
+            "locations_success": 0,
+            "locations_failed": 0,
+            "locations_skipped": 0,
+            "rows_upserted": 0,
+            "breaches_triggered": 0,
+            "total_api_calls": 0,
+            "latency_sum_ms": 0.0,
+        }
+        rate_limited = False
 
         try:
-            gauge_ids = [g.google_gauge_id for g in self.flood_gauges]
-            
-            # Real API call
-            url = f"{self.settings.google_flood_hub_base_url}/gauges:queryGaugeForecasts"
-            params = [("gaugeIds", gid) for gid in gauge_ids]
-            params.append(("key", self.settings.google_flood_hub_api_key))
-            
-            response = await self.http_client.get(url, params=params)
-            if response.status_code != 200:
-                raise ApiResponseError("google_flood_hub", response.status_code, response.text)
-            
-            # Response structure is {"forecasts": {"gauge_id": {...}}}
-            data = response.json()
-            forecast_map = data.get("forecasts", {})
-
             for gauge in self.flood_gauges:
+                # L1. Check backoff before EACH gauge
+                if await self._check_backoff():
+                    remaining = len(self.flood_gauges) - (
+                        stats["locations_success"] + stats["locations_failed"] + stats["locations_skipped"]
+                    )
+                    stats["locations_skipped"] += remaining
+                    rate_limited = True
+                    logger.warning("Rate limit hit mid-cycle at gauge %s, skipping %d remaining", gauge.google_gauge_id, remaining)
+                    break
+
                 try:
-                    gauge_data = forecast_map.get(gauge.google_gauge_id)
-                    if not gauge_data:
-                        logger.warning(f"No data for gauge {gauge.google_gauge_id}")
-                        stats["failed"] += 1
+                    t0 = time.monotonic()
+                    current_data = await self._fetch_current_reading(gauge.google_gauge_id)
+                    stats["total_api_calls"] += 1
+                    stats["latency_sum_ms"] += (time.monotonic() - t0) * 1000
+
+                    if current_data is None:
+                        # 404 or missing latestReading — not a failure
+                        stats["locations_skipped"] += 1
                         continue
 
                     previous_reading = await self.flood_repo.get_previous_reading(str(gauge.gauge_id))
-                    
-                    # 1. Parse current reading from the earliest point in forecast
-                    current = await self.floodhub_service.parse_v1_current(
-                        data=gauge_data,
+                    current_obj = await self.floodhub_service.parse_current_data(
+                        data=current_data,
                         gauge=gauge,
                         previous_reading=previous_reading
                     )
-                    
-                    if current:
-                        res_curr = await self.floodhub_service.process_current_reading(current)
-                        if res_curr["success"]:
-                            stats["success"] += 1
-                            if res_curr["breach_detected"]:
-                                stats["breaches"] += 1
+                    if current_obj:
+                        res = await self.floodhub_service.process_current_reading(current_obj, gauge)
+                        if res["success"]:
+                            stats["locations_success"] += 1
+                            stats["rows_upserted"] += 1
+                            if res.get("breach_detected"):
+                                stats["breaches_triggered"] += 1
                         else:
-                            stats["failed"] += 1
-                    
-                    # 2. Parse and process all forecast points
-                    forecasts = await self.floodhub_service.parse_forecast_data(
-                        data=gauge_data,
-                        gauge=gauge
-                    )
-                    if forecasts:
-                        res_fc = await self.floodhub_service.process_forecasts(forecasts)
-                        if res_fc["success"]:
-                            stats["forecast_points"] = stats.get("forecast_points", 0) + len(forecasts)
+                            stats["locations_failed"] += 1
+                    else:
+                        stats["locations_skipped"] += 1
 
+                except APIUnavailableError:
+                    raise  # Bubble up 403 immediately
+                except ApiRateLimitError:
+                    # L1. Rate limit mid-cycle — abort remaining
+                    remaining = len(self.flood_gauges) - (
+                        stats["locations_success"] + stats["locations_failed"] + stats["locations_skipped"]
+                    )
+                    stats["locations_skipped"] += remaining
+                    rate_limited = True
+                    break
                 except Exception as e:
-                    logger.error(f"Error processing {gauge.google_gauge_id}: {e}")
-                    stats["failed"] += 1
+                    logger.error(f"Error processing gauge {gauge.google_gauge_id}: {e}")
+                    stats["locations_failed"] += 1
+
+                # 500ms delay between gauges
+                await asyncio.sleep(self.settings.openmeteo_request_delay_ms / 1000.0)
+
+            # K5. Determine cycle status
+            if rate_limited:
+                status = "partial" if stats["locations_success"] > 0 else "skipped"
+            elif stats["locations_failed"] == 0:
+                status = "completed"
+            elif stats["locations_success"] > 0:
+                status = "partial"
+            else:
+                status = "failed"
+
+            avg_latency = (
+                stats["latency_sum_ms"] / stats["total_api_calls"]
+                if stats["total_api_calls"] > 0 else None
+            )
 
             await self.cycle_repo.complete_cycle(
-                cycle_id=cycle_id, 
-                status="completed" if stats["failed"] == 0 else "partial",
-                locations_targeted=stats["total"],
-                locations_success=stats["success"],
-                locations_failed=stats["failed"],
-                breaches_triggered=stats["breaches"]
+                cycle_id=cycle_id,
+                status=status,
+                locations_targeted=stats["locations_targeted"],
+                locations_success=stats["locations_success"],
+                locations_failed=stats["locations_failed"],
+                rows_upserted=stats["rows_upserted"],
+                breaches_triggered=stats["breaches_triggered"],
+                rate_limit_hits=1 if rate_limited else 0,
+                avg_latency_ms=avg_latency,
             )
             return stats
 
-        except Exception as e:
-            logger.error(f"Flood Hub collection failed: {e}")
+        except APIUnavailableError as e:
+            logger.critical(f"Flood Hub API Unavailable: {e}")
             await self.cycle_repo.complete_cycle(
-                cycle_id=cycle_id, 
+                cycle_id=cycle_id,
                 status="failed",
-                locations_targeted=len(self.flood_gauges),
-                locations_failed=len(self.flood_gauges)
+                failure_reason=str(e),
+                locations_targeted=stats["locations_targeted"],
+            )
+            return {"status": "failed", "error": str(e)}
+        except Exception as e:
+            logger.error(f"Flood current collection failed: {e}", exc_info=True)
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status="failed",
+                failure_reason=str(e),
+                locations_targeted=stats["locations_targeted"],
+                locations_failed=stats["locations_targeted"],
             )
             return {"status": "failed", "error": str(e)}
 
-    async def collect_forecasts(self, force: bool = False) -> dict:
-        """Fetch forecasts for all active gauges."""
-        # Since we get forecasts in the same call in V1, we could combine or re-poll.
-        # For simplicity, we'll hit it again to keep the cycles separate.
-        return await self.collect_current_readings(force)
+    # ── Job 2: Forecast Collection (every 6 hours) ─────────────────
+
+    async def collect_forecast(self) -> dict:
+        """Execute flood forecast collection, gauge by gauge.
+
+        K4: If no active gauges, log WARNING and return without cycle.
+        L1: Backoff is checked before EACH gauge, not just at cycle start.
+        """
+        # K4. Empty active gauges
+        if not self.flood_gauges:
+            logger.warning("No active flood gauges found — skipping flood_forecast cycle")
+            return {"status": "skipped", "reason": "no_gauges"}
+
+        api_config = await self._load_api_config()
+
+        # L1/L4. Check persisted backoff before starting cycle
+        if await self._check_backoff():
+            cycle_id = await self.cycle_repo.start_cycle(
+                str(api_config.api_id), "google_flood_hub", "flood_forecast"
+            )
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status="skipped",
+                failure_reason="API in backoff period",
+                locations_targeted=len(self.flood_gauges),
+            )
+            return {"status": "skipped", "reason": "backoff"}
+
+        cycle_id = await self.cycle_repo.start_cycle(
+            str(api_config.api_id), "google_flood_hub", "flood_forecast"
+        )
+
+        stats = {
+            "locations_targeted": len(self.flood_gauges),
+            "locations_success": 0,
+            "locations_failed": 0,
+            "locations_skipped": 0,
+            "rows_upserted": 0,
+            "breaches_triggered": 0,
+            "total_api_calls": 0,
+            "latency_sum_ms": 0.0,
+        }
+        rate_limited = False
+
+        try:
+            for gauge in self.flood_gauges:
+                # L1. Check backoff before EACH gauge
+                if await self._check_backoff():
+                    remaining = len(self.flood_gauges) - (
+                        stats["locations_success"] + stats["locations_failed"] + stats["locations_skipped"]
+                    )
+                    stats["locations_skipped"] += remaining
+                    rate_limited = True
+                    logger.warning("Rate limit hit mid-cycle at gauge %s, skipping %d remaining", gauge.google_gauge_id, remaining)
+                    break
+
+                try:
+                    t0 = time.monotonic()
+                    forecast_data = await self._fetch_forecast(gauge.google_gauge_id)
+                    stats["total_api_calls"] += 1
+                    stats["latency_sum_ms"] += (time.monotonic() - t0) * 1000
+
+                    if forecast_data is None:
+                        # 404 or empty forecasts — not a failure
+                        stats["locations_skipped"] += 1
+                        continue
+
+                    forecasts = await self.floodhub_service.parse_forecast_data(
+                        data=forecast_data,
+                        gauge=gauge
+                    )
+                    if forecasts:
+                        res = await self.floodhub_service.process_forecasts(forecasts, gauge)
+                        if res["success"]:
+                            stats["locations_success"] += 1
+                            stats["rows_upserted"] += res.get("count", len(forecasts))
+                        else:
+                            stats["locations_failed"] += 1
+                    else:
+                        stats["locations_skipped"] += 1
+
+                except APIUnavailableError:
+                    raise  # Bubble up 403 immediately
+                except ApiRateLimitError:
+                    # L1. Rate limit mid-cycle — abort remaining
+                    remaining = len(self.flood_gauges) - (
+                        stats["locations_success"] + stats["locations_failed"] + stats["locations_skipped"]
+                    )
+                    stats["locations_skipped"] += remaining
+                    rate_limited = True
+                    break
+                except Exception as e:
+                    logger.error(f"Error processing forecast for gauge {gauge.google_gauge_id}: {e}")
+                    stats["locations_failed"] += 1
+
+                # 500ms delay between gauges
+                await asyncio.sleep(self.settings.openmeteo_request_delay_ms / 1000.0)
+
+            # K5. Determine cycle status
+            if rate_limited:
+                status = "partial" if stats["locations_success"] > 0 else "skipped"
+            elif stats["locations_failed"] == 0:
+                status = "completed"
+            elif stats["locations_success"] > 0:
+                status = "partial"
+            else:
+                status = "failed"
+
+            avg_latency = (
+                stats["latency_sum_ms"] / stats["total_api_calls"]
+                if stats["total_api_calls"] > 0 else None
+            )
+
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status=status,
+                locations_targeted=stats["locations_targeted"],
+                locations_success=stats["locations_success"],
+                locations_failed=stats["locations_failed"],
+                rows_upserted=stats["rows_upserted"],
+                breaches_triggered=stats["breaches_triggered"],
+                rate_limit_hits=1 if rate_limited else 0,
+                avg_latency_ms=avg_latency,
+            )
+            return stats
+
+        except APIUnavailableError as e:
+            logger.critical(f"Flood Hub API Unavailable: {e}")
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status="failed",
+                failure_reason=str(e),
+                locations_targeted=stats["locations_targeted"],
+            )
+            return {"status": "failed", "error": str(e)}
+        except Exception as e:
+            logger.error(f"Flood forecast collection failed: {e}", exc_info=True)
+            await self.cycle_repo.complete_cycle(
+                cycle_id=cycle_id,
+                status="failed",
+                failure_reason=str(e),
+                locations_targeted=stats["locations_targeted"],
+                locations_failed=stats["locations_targeted"],
+            )
+            return {"status": "failed", "error": str(e)}
+
+    # ── Legacy combined method (kept for backwards compatibility) ───
 
     async def collect(self) -> dict:
-        """Execute both current and forecast collection."""
-        res_current = await self.collect_current_readings()
-        res_forecast = await self.collect_forecasts()
-        return {"current": res_current, "forecast": res_forecast}
+        """Execute both current + forecast collection.
+
+        Retained for backwards compatibility and manual triggers.
+        The scheduler uses collect_current() and collect_forecast() separately.
+        """
+        results = {}
+        results["current"] = await self.collect_current()
+        results["forecast"] = await self.collect_forecast()
+        return results

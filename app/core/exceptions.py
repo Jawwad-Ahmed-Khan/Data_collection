@@ -118,3 +118,20 @@ class ConfigurationError(CollectionServiceError):
     """
 
     pass
+
+
+class APIUnavailableError(CollectionServiceError):
+    """Raised when an external API is permanently unavailable (e.g., invalid API key).
+
+    Unlike rate limiting (which is temporary), this indicates the API
+    cannot be used until the configuration is fixed.
+
+    Attributes:
+        api_name: Which API is unavailable.
+        reason: Human-readable explanation.
+    """
+
+    def __init__(self, api_name: str, reason: str = "") -> None:
+        self.api_name = api_name
+        self.reason = reason
+        super().__init__(f"{api_name} unavailable: {reason}")

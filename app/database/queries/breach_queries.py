@@ -63,6 +63,8 @@ FIND_RECENT_BREACH = """
       AND detected_at >= $2
       AND is_duplicate = FALSE
       AND ($3::uuid IS NULL OR weather_location_id = $3 OR gauge_id = $3)
+      AND is_forecast_breach = $4::boolean
+      AND ($5::text IS NULL OR breach_severity = $5::breach_level)
     ORDER BY detected_at DESC
     LIMIT 1
 """

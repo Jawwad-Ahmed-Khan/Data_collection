@@ -45,6 +45,7 @@ class FloodRepository(BaseRepository):
             current.river_system,
             current.district,
             current.province,
+            None,  # cycle_id
             current.reading_time,
             current.current_level_m,
             current.warning_level_m,
@@ -62,30 +63,40 @@ class FloodRepository(BaseRepository):
             current.flood_status,
             current.has_breach,
             current.breach_severity,
+            None,  # threshold_id
+            current.raw_api_response,
+            __import__('datetime').datetime.now(__import__('zoneinfo').ZoneInfo("UTC"))
         )
 
-    async def upsert_forecast(self, forecast: FloodGaugeForecastBase) -> None:
-        """Insert or update a probabilistic flood forecast point."""
-        await self.db.execute(
-            UPSERT_FLOOD_FORECAST,
-            forecast.gauge_id,
-            forecast.google_gauge_id,
-            forecast.gauge_name,
-            forecast.river_name,
-            forecast.district,
-            forecast.province,
-            forecast.forecast_for_datetime,
-            forecast.forecast_issued_at,
-            forecast.forecast_date,
-            forecast.day_offset,
-            forecast.forecast_horizon_h,
-            forecast.level_p10_m,
-            forecast.level_p50_m,
-            forecast.level_p90_m,
-            forecast.prob_exceeds_warning_pct,
-            forecast.prob_exceeds_danger_pct,
-            forecast.forecast_status,
-            forecast.worst_case_status,
-            forecast.has_forecast_breach,
-            forecast.breach_severity,
-        )
+    async def upsert_forecast_batch(self, forecasts: list[FloodGaugeForecastBase]) -> None:
+        """Insert or update a probabilistic flood forecast point in bulk."""
+        if not forecasts:
+            return
+            
+        args = [
+            (
+                f.gauge_id,
+                f.google_gauge_id,
+                f.gauge_name,
+                f.river_name,
+                f.district,
+                f.province,
+                f.forecast_for_datetime,
+                f.forecast_issued_at,
+                f.level_p10_m,
+                f.level_p50_m,
+                f.level_p90_m,
+                f.prob_exceeds_warning_pct,
+                f.prob_exceeds_danger_pct,
+                f.prob_exceeds_extreme_pct,
+                f.forecast_status,
+                f.worst_case_status,
+                f.has_forecast_breach,
+                f.breach_severity,
+                f.raw_api_response,
+            ) for f in forecasts
+        ]
+        
+        await self.db.executemany(UPSERT_FLOOD_FORECAST, args)
+
+

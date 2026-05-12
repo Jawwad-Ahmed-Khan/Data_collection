@@ -258,6 +258,7 @@ class BreachService:
         metric_category: str,
         seismic_event_id: UUID | None = None,
         severity: str | None = None,
+        is_forecast_breach: bool = False,
     ) -> UUID | None:
         """Check if a similar breach was recently created (duplicate suppression).
         
@@ -268,6 +269,7 @@ class BreachService:
                             ('earthquake', 'temperature', 'rainfall', 'wind', 'flood_gauge').
             seismic_event_id: Event ID for earthquakes.
             severity: Severity level to check escalation for earthquakes.
+            is_forecast_breach: Filter for forecast vs current breaches.
         
         Returns:
             UUID of duplicate breach if found, None otherwise.
@@ -298,6 +300,8 @@ class BreachService:
             location_id=location_id,
             metric_name=metric_name,
             since=cutoff_time,
+            is_forecast_breach=is_forecast_breach,
+            severity=severity,
         )
 
         if duplicate_breach_id:

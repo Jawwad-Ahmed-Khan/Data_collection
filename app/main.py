@@ -131,18 +131,21 @@ async def lifespan(app: FastAPI):
     logger.info("Checking and seeding reference data...")
     try:
         # Clean up any cycles left 'running' from a previous crash
-        fixed = await _db_pool.execute("""
+        fixed_weather = await _db_pool.execute("""
             UPDATE collection_cycles
-            SET
-                status         = 'failed',
-                completed_at   = now(),
-                failure_reason = 'Service restarted — cycle was interrupted'
-            WHERE status = 'running'
-              AND api_name = 'open_meteo'
-              AND started_at < now() - INTERVAL '30 minutes'
+            SET status = 'failed', completed_at = now(), failure_reason = 'Service restarted — cycle was interrupted'
+            WHERE status = 'running' AND api_name = 'open_meteo' AND started_at < now() - INTERVAL '30 minutes'
         """)
-        if fixed != 'UPDATE 0':
-            logger.warning("Fixed stale running cycles: %s", fixed)
+        if fixed_weather != 'UPDATE 0':
+            logger.warning("Fixed stale weather cycles: %s", fixed_weather)
+
+        fixed_flood = await _db_pool.execute("""
+            UPDATE collection_cycles
+            SET status = 'failed', completed_at = now(), failure_reason = 'Service restarted — cycle was interrupted'
+            WHERE status = 'running' AND api_name = 'google_flood_hub' AND started_at < now() - INTERVAL '15 minutes'
+        """)
+        if fixed_flood != 'UPDATE 0':
+            logger.warning("Fixed stale flood cycles: %s", fixed_flood)
 
         # Seed APIs
         await _db_pool.execute("""
@@ -154,7 +157,7 @@ async def lifespan(app: FastAPI):
             VALUES 
                 ('usgs', 'USGS Earthquake API', 'https://earthquake.usgs.gov/fdsnws/event/1/query', 'https://earthquake.usgs.gov/fdsnws/event/1/', NULL, NULL, NULL, NULL, NULL),
                 ('open_meteo', 'Open-Meteo Weather API', 'https://api.open-meteo.com/v1/forecast', 'https://open-meteo.com/en/docs', 10, 500, 10, 600, 2.0),
-                ('google_flood_hub', 'Google Flood Hub API', 'https://floodforecasting.googleapis.com/v1', 'https://developers.google.com/earth-engine/guides/flood_hub', NULL, NULL, NULL, NULL, NULL)
+                ('google_flood_hub', 'Google Flood Hub API', 'https://floodforecasting.googleapis.com/v1', 'https://developers.google.com/earth-engine/guides/flood_hub', 60, 500, 10, 600, 2.0)
             ON CONFLICT DO NOTHING
         """)
         logger.info("api_registry seeded/verified")
@@ -167,6 +170,7 @@ async def lifespan(app: FastAPI):
                 province, applies_season, is_active
             ) VALUES 
                 ('earthquake', 'magnitude', 'above', 'richter', 4.0, 5.0, 6.0, 7.0, NULL, NULL, TRUE),
+                ('flood', 'gauge_pct_of_danger', 'above', 'percent', 60.0, 80.0, 100.0, 120.0, NULL, NULL, TRUE),
                 ('heatwave', 'temp_max_c', 'above', 'celsius', 40.0, 42.0, 45.0, 48.0, NULL, 'summer', TRUE),
                 ('heatwave', 'temp_max_c', 'above', 'celsius', 42.0, 45.0, 48.0, 50.0, 'sindh', 'summer', TRUE),
                 ('heavy_rain', 'precip_1h_mm', 'above', 'mm', 20.0, 30.0, 40.0, 50.0, NULL, NULL, TRUE),
@@ -216,6 +220,48 @@ async def lifespan(app: FastAPI):
                     ON CONFLICT DO NOTHING
                 """, *loc)
             logger.info("Seeded 15 prototype locations.")
+
+        # Seed Gauges
+        gauge_count_row = await _db_pool.fetch_one("SELECT count(*) as cnt FROM flood_gauge_registry WHERE is_active = TRUE")
+        if gauge_count_row and gauge_count_row["cnt"] < 9:
+            import json
+            import os
+            # Read first 9 gauges from active_gauges.json
+            gauge_path = "active_gauges.json"
+            if os.path.exists(gauge_path):
+                with open(gauge_path, "r") as f:
+                    all_gauges = json.load(f)
+                
+                # Take first 9
+                for gauge in all_gauges[:9]:
+                    await _db_pool.execute("""
+                        INSERT INTO flood_gauge_registry (
+                            google_gauge_id, gauge_name, river_name, coordinates, latitude, longitude,
+                            province, district, poll_priority, is_active,
+                            warning_level_m, danger_level_m, extreme_level_m, historical_max_m
+                        ) VALUES (
+                            $1, $2, $3, ST_GeogFromText($4), $5, $6, $7::pk_province, $8, $9::poll_priority, TRUE,
+                            $10, $11, $12, $13
+                        )
+                        ON CONFLICT DO NOTHING
+                    """,
+                    gauge["google_gauge_id"], gauge.get("gauge_name", "Unnamed"), "Unnamed River",
+                    f"POINT({gauge['lon']} {gauge['lat']})",
+                    gauge["lat"], gauge["lon"], "unknown", "Unknown", "normal",
+                    10.0, 12.0, 15.0, 20.0
+                    )
+                logger.info("Seeded 9 active flood gauges.")
+                
+                # Link nearest_location_id
+                await _db_pool.execute("""
+                    UPDATE flood_gauge_registry SET nearest_location_id = (
+                        SELECT location_id FROM pakistan_locations
+                        ORDER BY coordinates <-> flood_gauge_registry.coordinates
+                        LIMIT 1
+                    )
+                    WHERE nearest_location_id IS NULL AND is_active = TRUE
+                """)
+                logger.info("Linked nearest locations to flood gauges.")
     except Exception as e:
         logger.error("Failed during seeding: %s", str(e))
 
@@ -310,22 +356,26 @@ async def lifespan(app: FastAPI):
     )
     
     # Create Flood Hub service and collector
-    from app.models.flood_models import FloodGaugeRegistry
-    flood_gauges = [FloodGaugeRegistry(**g) for g in _cache.flood_gauges]
-    
-    floodhub_service = FloodHubService(
-        flood_repo=flood_repo,
-        breach_service=breach_service,
-    )
-    
-    _floodhub_collector = FloodHubCollector(
-        http_client=_http_client,
-        reference_repo=reference_repo,
-        cycle_repo=cycle_repo,
-        flood_repo=flood_repo,
-        floodhub_service=floodhub_service,
-        flood_gauges=flood_gauges,
-    )
+    if not settings.google_flood_hub_api_key:
+        logger.critical("CRITICAL: GOOGLE_FLOOD_HUB_API_KEY is missing. Flood Hub collector will be disabled.")
+        _floodhub_collector = None
+    else:
+        from app.models.flood_models import FloodGaugeRegistry
+        flood_gauges = [FloodGaugeRegistry(**g) for g in _cache.flood_gauges]
+        
+        floodhub_service = FloodHubService(
+            flood_repo=flood_repo,
+            breach_service=breach_service,
+        )
+        
+        _floodhub_collector = FloodHubCollector(
+            http_client=_http_client,
+            reference_repo=reference_repo,
+            cycle_repo=cycle_repo,
+            flood_repo=flood_repo,
+            floodhub_service=floodhub_service,
+            flood_gauges=flood_gauges,
+        )
     
     # Create dispatch service
     _dispatch_service = DispatchService(

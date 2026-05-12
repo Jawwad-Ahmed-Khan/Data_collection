@@ -123,21 +123,20 @@ class JobScheduler:
             )
 
     async def _run_flood_current(self) -> None:
-        """Job 3: Google Flood Hub current readings."""
+        """Job 3: Google Flood Hub current readings (every 1h)."""
         if self.floodhub_collector:
             await self._safe_job_wrapper(
-                "Flood Current Readings",
-                self.floodhub_collector.collect_current_readings,
+                "Flood Hub Current",
+                self.floodhub_collector.collect_current,
             )
 
-    async def _run_flood_forecasts(self) -> None:
-        """Job 4: Google Flood Hub forecasts."""
+    async def _run_flood_forecast(self) -> None:
+        """Job 4: Google Flood Hub forecasts (every 6h)."""
         if self.floodhub_collector:
             await self._safe_job_wrapper(
-                "Flood Forecasts",
-                self.floodhub_collector.collect_forecasts,
+                "Flood Hub Forecast",
+                self.floodhub_collector.collect_forecast,
             )
-
     async def _run_breach_dispatch(self) -> None:
         """Job 5: Breach dispatch to main system."""
         if self.dispatch_service:
@@ -223,22 +222,24 @@ class JobScheduler:
             self.scheduler.add_job(
                 self._run_flood_current,
                 trigger=IntervalTrigger(minutes=settings.flood_current_interval_minutes),
+                next_run_time=datetime.now(timezone.utc),
                 id="flood_current",
                 name="Flood Hub Current Readings",
                 replace_existing=True,
             )
-            logger.info("✓ Job 3/7: Flood current readings (every %dmin)", settings.flood_current_interval_minutes)
+            logger.info("✓ Job 3/7: Flood Hub current (every %dmin)", settings.flood_current_interval_minutes)
         
         # Job 4: Flood Hub forecasts (every 6h)
         if floodhub_collector:
             self.scheduler.add_job(
-                self._run_flood_forecasts,
+                self._run_flood_forecast,
                 trigger=IntervalTrigger(hours=settings.flood_forecast_interval_hours),
-                id="flood_forecasts",
+                next_run_time=datetime.now(timezone.utc),
+                id="flood_forecast",
                 name="Flood Hub Forecasts",
                 replace_existing=True,
             )
-            logger.info("✓ Job 4/7: Flood forecasts (every %dh)", settings.flood_forecast_interval_hours)
+            logger.info("✓ Job 4/7: Flood Hub forecast (every %dh)", settings.flood_forecast_interval_hours)
         
         # Job 5: Breach dispatch (every 30s)
         if dispatch_service:

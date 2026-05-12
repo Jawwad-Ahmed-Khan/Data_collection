@@ -76,6 +76,8 @@ class BreachRepository(BaseRepository):
         metric_name: str,
         since: datetime,
         location_id: UUID | None = None,
+        is_forecast_breach: bool = False,
+        severity: str | None = None,
     ) -> UUID | None:
         """Find a recent non-duplicate breach for the same metric and location.
         
@@ -83,6 +85,8 @@ class BreachRepository(BaseRepository):
             metric_name: Metric that breached.
             since: Only consider breaches after this time.
             location_id: Location ID (weather_location_id or gauge_id).
+            is_forecast_breach: Filter for forecast vs current breaches.
+            severity: Optional severity level to filter by.
         
         Returns:
             UUID of recent breach if found, None otherwise.
@@ -92,6 +96,8 @@ class BreachRepository(BaseRepository):
             metric_name,
             since,
             location_id,
+            is_forecast_breach,
+            severity,
         )
         return UUID(row["breach_id"]) if row else None
 

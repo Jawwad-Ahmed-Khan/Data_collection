@@ -59,6 +59,7 @@ class FloodGaugeCurrentBase(BaseModel):
     flood_status: Literal["no_flooding", "watch", "warning", "emergency"] = "no_flooding"
     has_breach: bool = False
     breach_severity: Literal["watch", "warning", "emergency", "extreme"] | None = None
+    raw_api_response: dict | None = None
 
 
 class FloodGaugeCurrent(FloodGaugeCurrentBase):
@@ -82,10 +83,12 @@ class FloodGaugeForecastBase(BaseModel):
     level_p90_m: float | None = None
     prob_exceeds_warning_pct: float | None = None
     prob_exceeds_danger_pct: float | None = None
+    prob_exceeds_extreme_pct: float | None = None
     forecast_status: Literal["no_flooding", "watch", "warning", "emergency"] = "no_flooding"
     worst_case_status: Literal["no_flooding", "watch", "warning", "emergency"] = "no_flooding"
     has_forecast_breach: bool = False
     breach_severity: Literal["watch", "warning", "emergency", "extreme"] | None = None
+    raw_api_response: dict | None = None
 
 
 class FloodGaugeForecast(FloodGaugeForecastBase):
