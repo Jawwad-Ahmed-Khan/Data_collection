@@ -13,6 +13,7 @@ from app.database.queries.reference_queries import (
     GET_ALL_THRESHOLDS,
     GET_ACTIVE_LOCATIONS,
     UPDATE_LOCATION_POLL_STATE,
+    GET_DUE_LOCATIONS,
 )
 
 
@@ -38,6 +39,11 @@ class ReferenceRepository(BaseRepository):
     async def get_active_locations(self) -> list[PakistanLocation]:
         """Fetch all active monitoring locations."""
         rows = await self.db.fetch_many(GET_ACTIVE_LOCATIONS)
+        return [PakistanLocation(**row) for row in rows]
+
+    async def get_due_locations(self) -> list[PakistanLocation]:
+        """Fetch active monitoring locations that are due for polling."""
+        rows = await self.db.fetch_many(GET_DUE_LOCATIONS)
         return [PakistanLocation(**row) for row in rows]
 
     async def update_location_poll_state(

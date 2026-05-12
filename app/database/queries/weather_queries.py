@@ -5,14 +5,14 @@ ClimaSync Collection Service — Weather SQL Queries
 UPSERT_WEATHER_HOURLY = """
     INSERT INTO weather_hourly_window (
         location_id, location_key, location_name, district, province,
-        latitude, longitude, coordinates, forecast_for_datetime, forecast_date,
-        day_offset, temp_c, temp_apparent_c, temp_dewpoint_c, precip_mm,
+        latitude, longitude, coordinates, forecast_for_datetime,
+        temp_c, temp_apparent_c, temp_dewpoint_c, precip_mm,
         precip_prob_pct, rain_mm, snowfall_cm, snow_depth_m,
         precip_3h_mm, precip_6h_mm, precip_12h_mm, precip_24h_mm, precip_72h_mm,
         wind_speed_kmh, wind_gusts_kmh, wind_direction_deg,
-        wind_direction_cardinal, humidity_pct, pressure_hpa,
+        humidity_pct, pressure_hpa,
         visibility_m, cloud_cover_pct, uv_index, cape_jkg,
-        weather_code, weather_condition, weather_description,
+        weather_code, weather_description,
         is_daytime, flag_extreme_heat, flag_heatwave,
         flag_heavy_rain, flag_very_heavy_rain, flag_storm,
         flag_severe_storm, flag_cold_wave, flag_dust_storm,
@@ -22,11 +22,11 @@ UPSERT_WEATHER_HOURLY = """
     ) VALUES (
         $1::uuid, $2, $3, $4, $5, $6::numeric, $7::numeric,
         ST_SetSRID(ST_MakePoint($7::float8, $6::float8), 4326),
-        $8, $9, $10, $11::numeric, $12, $13, $14, $15, $16, $17, $18, 
-        $19, $20, $21, $22, $23, $24, $25, $26,
-        $27, $28, $29, $30, $31, $32, $33, $34, $35, 
-        $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46,
-        $47, $48, $49, $50, $51, $52::uuid, $53::uuid
+        $8, $9::numeric, $10, $11, $12, $13, $14, $15, $16, 
+        $17, $18, $19, $20, $21, $22, $23, $24,
+        $25, $26, $27, $28, $29, $30, $31, $32, 
+        $33, $34, $35, $36, $37, $38, $39, $40, $41, $42,
+        $43, $44, $45, $46, $47, $48::uuid, $49::uuid
     )
     ON CONFLICT (location_id, forecast_for_datetime) DO UPDATE SET
         temp_c = EXCLUDED.temp_c,
@@ -45,7 +45,6 @@ UPSERT_WEATHER_HOURLY = """
         wind_speed_kmh = EXCLUDED.wind_speed_kmh,
         wind_gusts_kmh = EXCLUDED.wind_gusts_kmh,
         wind_direction_deg = EXCLUDED.wind_direction_deg,
-        wind_direction_cardinal = EXCLUDED.wind_direction_cardinal,
         humidity_pct = EXCLUDED.humidity_pct,
         pressure_hpa = EXCLUDED.pressure_hpa,
         visibility_m = EXCLUDED.visibility_m,
@@ -53,7 +52,6 @@ UPSERT_WEATHER_HOURLY = """
         uv_index = EXCLUDED.uv_index,
         cape_jkg = EXCLUDED.cape_jkg,
         weather_code = EXCLUDED.weather_code,
-        weather_condition = EXCLUDED.weather_condition,
         weather_description = EXCLUDED.weather_description,
         is_daytime = EXCLUDED.is_daytime,
         flag_extreme_heat = EXCLUDED.flag_extreme_heat,
@@ -73,12 +71,13 @@ UPSERT_WEATHER_HOURLY = """
         threshold_id = EXCLUDED.threshold_id,
         cycle_id = EXCLUDED.cycle_id,
         last_updated_at = now()
+    RETURNING (xmax = 0) AS was_inserted
 """
 
 UPSERT_WEATHER_DAILY = """
     INSERT INTO weather_daily_summaries (
         location_id, location_key, location_name, district, province,
-        latitude, longitude, coordinates, summary_date, day_offset,
+        latitude, longitude, coordinates, summary_date,
         temp_max_c, temp_min_c, feels_like_max_c, feels_like_min_c,
         precip_total_mm, precip_prob_max_pct, wind_speed_max_kmh,
         wind_gusts_max_kmh, uv_index_max, sunrise_at, sunset_at,
@@ -88,8 +87,8 @@ UPSERT_WEATHER_DAILY = """
     ) VALUES (
         $1::uuid, $2, $3, $4, $5, $6::numeric, $7::numeric,
         ST_SetSRID(ST_MakePoint($7::float8, $6::float8), 4326),
-        $8, $9, $10, $11, $12, $13, $14, $15, $16, 
-        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28::uuid
+        $8, $9, $10, $11, $12, $13, $14, $15, 
+        $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27::uuid
     )
     ON CONFLICT (location_id, summary_date) DO UPDATE SET
         temp_max_c = EXCLUDED.temp_max_c,
@@ -112,6 +111,7 @@ UPSERT_WEATHER_DAILY = """
         worst_breach_severity = EXCLUDED.worst_breach_severity,
         cycle_id = EXCLUDED.cycle_id,
         last_updated_at = now()
+    RETURNING (xmax = 0) AS was_inserted
 """
 
 UPSERT_CURRENT_WEATHER_PER_LOCATION = """
@@ -170,4 +170,5 @@ UPSERT_WEATHER_5DAY_FORECAST = """
         flag_cold_wave_day = EXCLUDED.flag_cold_wave_day,
         worst_breach_severity = EXCLUDED.worst_breach_severity,
         last_updated_at = now()
+    RETURNING (xmax = 0) AS was_inserted
 """

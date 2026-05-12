@@ -25,7 +25,9 @@ from tenacity import (
     wait_exponential,
     retry_if_exception_type,
     RetryError,
+    before_sleep_log,
 )
+import logging
 
 from app.core.config import get_settings
 from app.core.exceptions import ApiResponseError, ApiRateLimitError, ApiTimeoutError
@@ -161,31 +163,35 @@ class BaseCollector:
         # Try to read Retry-After header (seconds or HTTP date)
         retry_after = response.headers.get("Retry-After")
         
+        retry_seconds = 0
         if retry_after:
             try:
                 # Try parsing as integer (seconds)
-                backoff_seconds = int(retry_after)
+                retry_seconds = int(retry_after)
             except ValueError:
                 # Try parsing as HTTP date (not common, but spec-compliant)
                 try:
                     retry_date = datetime.strptime(retry_after, "%a, %d %b %Y %H:%M:%S GMT")
-                    backoff_seconds = int((retry_date - datetime.utcnow()).total_seconds())
+                    retry_seconds = int((retry_date - datetime.utcnow()).total_seconds())
                 except ValueError:
-                    # Fallback to default backoff
-                    backoff_seconds = int(settings.api_backoff_initial_s)
-        else:
-            # No Retry-After header — use default backoff
-            backoff_seconds = int(settings.api_backoff_initial_s)
+                    pass
+                    
+        # Compute exponential backoff based on consecutive failures
+        api_config = await self.reference_repo.get_api_by_name(self.api_name)
+        consec_failures = api_config.consecutive_failures if api_config else 0
         
-        # Apply max backoff limit
-        backoff_seconds = min(backoff_seconds, int(settings.api_backoff_max_s))
+        computed_backoff = min(
+            settings.api_backoff_initial_s * (settings.api_backoff_multiplier ** consec_failures),
+            settings.api_backoff_max_s
+        )
+        final_backoff = int(max(computed_backoff, retry_seconds))
         
-        backoff_until = datetime.now(_PKT) + timedelta(seconds=backoff_seconds)
+        backoff_until = datetime.now(_PKT) + timedelta(seconds=final_backoff)
         
         logger.warning(
-            "Rate limit hit for API '%s'. Backing off for %d seconds until %s",
+            "%s rate limited. Backoff %ds until %s",
             self.api_name,
-            backoff_seconds,
+            final_backoff,
             backoff_until.isoformat(),
         )
         
@@ -197,7 +203,7 @@ class BaseCollector:
         
         raise ApiRateLimitError(
             self.api_name,
-            backoff_seconds,
+            final_backoff,
         )
 
     # ── HTTP Request with Retry ───────────────────────────────────
@@ -233,18 +239,19 @@ class BaseCollector:
         
         # Load API config for timeout
         api_config = await self._load_api_config()
-        timeout = httpx.Timeout(30.0)  # Default 30 second timeout
+        timeout = httpx.Timeout(30.0, connect=10.0)  # 10s connect, 30s read/overall timeout
         
         # Define retry logic
         @retry(
             stop=stop_after_attempt(3),
-            wait=wait_exponential(min=1, max=30),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
             retry=retry_if_exception_type((
                 httpx.TimeoutException,
                 httpx.ConnectError,
                 httpx.HTTPStatusError,  # Retry on 5xx errors
             )),
             reraise=True,
+            before_sleep=before_sleep_log(logger, logging.WARNING),
         )
         async def _make_request() -> httpx.Response:
             """Inner function with retry decorator."""

@@ -78,7 +78,7 @@ class USGSService:
 
     # ── GeoJSON Parsing ───────────────────────────────────────────
 
-    def parse_usgs_response(self, geojson: dict[str, Any]) -> list[SeismicEventBase]:
+    async def parse_usgs_response(self, geojson: dict[str, Any]) -> list[SeismicEventBase]:
         """Parse USGS GeoJSON response into SeismicEventBase objects.
         
         Args:
@@ -97,12 +97,12 @@ class USGSService:
         
         for feature in features:
             try:
-                event = self._parse_feature(feature)
+                event = await self._parse_feature(feature)
                 if event:
                     events.append(event)
             except Exception as e:
-                logger.error(
-                    "Failed to parse USGS feature %s: %s",
+                logger.warning(
+                    "Failed to parse feature [usgs_event_id=%s]: %s",
                     feature.get("id", "unknown"),
                     str(e),
                 )
@@ -111,7 +111,7 @@ class USGSService:
         logger.info("Parsed %d earthquake events from USGS", len(events))
         return events
 
-    def _parse_feature(self, feature: dict[str, Any]) -> SeismicEventBase | None:
+    async def _parse_feature(self, feature: dict[str, Any]) -> SeismicEventBase | None:
         """Parse a single GeoJSON feature into SeismicEventBase.
         
         Args:
@@ -126,23 +126,33 @@ class USGSService:
         
         # Extract required fields
         usgs_event_id = feature.get("id")
-        if not usgs_event_id:
-            logger.warning("Feature missing 'id', skipping")
+        if not usgs_event_id or not isinstance(usgs_event_id, str):
+            logger.warning("Feature missing valid 'id', skipping")
+            return None
+            
+        status = properties.get("status", "").lower()
+        if status == "deleted":
+            logger.debug("Skipping deleted event [usgs_event_id=%s]", usgs_event_id)
             return None
         
         magnitude = properties.get("mag")
         if magnitude is None:
-            logger.warning("Event %s missing magnitude, skipping", usgs_event_id)
+            logger.debug("Skipping event with null magnitude [usgs_event_id=%s]", usgs_event_id)
             return None
         
         # Extract coordinates (GeoJSON format: [longitude, latitude, depth])
-        if len(coordinates) < 3:
-            logger.warning("Event %s missing coordinates, skipping", usgs_event_id)
+        if not geometry or len(coordinates) < 2:
+            logger.warning("Event %s missing valid coordinates, skipping", usgs_event_id)
             return None
         
         longitude = coordinates[0]
         latitude = coordinates[1]
-        depth_km = coordinates[2]  # USGS provides depth in km
+        depth_km = coordinates[2] if len(coordinates) >= 3 else None  # USGS provides depth in km
+        
+        # Validate coordinate bounds
+        if not (23.0 <= latitude <= 38.0 and 60.0 <= longitude <= 78.0):
+            logger.debug("Event %s outside Pakistan bounds, skipping", usgs_event_id)
+            return None
         
         # Convert USGS unix milliseconds to datetime
         earthquake_time_ms = properties.get("time")
@@ -176,12 +186,12 @@ class USGSService:
         magnitude_class = self._classify_magnitude(magnitude)
         depth_class = self._classify_depth(depth_km)
         
-        # Resolve nearest Pakistan location
-        nearest_location, distance_km = self._find_nearest_location(latitude, longitude)
+        # Resolve nearest Pakistan location using DB
+        nearest_location_dict, distance_km = await self.seismic_repo.find_nearest_location(longitude, latitude)
         
-        resolved_district = nearest_location.district if nearest_location else None
-        resolved_province = nearest_location.province if nearest_location else None
-        nearest_location_id = nearest_location.location_id if nearest_location else None
+        resolved_district = nearest_location_dict.get("district") if nearest_location_dict else None
+        resolved_province = nearest_location_dict.get("province") if nearest_location_dict else None
+        nearest_location_id = nearest_location_dict.get("location_id") if nearest_location_dict else None
         
         # Create event object
         event = SeismicEventBase(
@@ -374,14 +384,14 @@ class USGSService:
 
     # ── Breach Detection ──────────────────────────────────────────
 
-    async def check_breach(self, event: SeismicEventBase) -> tuple[bool, str | None]:
-        """Check if earthquake magnitude crosses threshold.
+    def evaluate_breach(self, event: SeismicEventBase) -> tuple[str | None, Any | None]:
+        """Evaluate if earthquake magnitude crosses threshold without creating breach record.
         
         Args:
             event: Seismic event to check.
         
         Returns:
-            Tuple of (has_breach, breach_severity).
+            Tuple of (breach_severity, threshold).
         """
         # Find applicable threshold for earthquake magnitude
         threshold = self.breach_service.find_applicable_threshold(
@@ -397,7 +407,7 @@ class USGSService:
                 event.resolved_district,
                 event.resolved_province,
             )
-            return False, None
+            return None, None
         
         # Check if magnitude breaches threshold
         severity = self.breach_service.check_breach(
@@ -405,34 +415,7 @@ class USGSService:
             threshold=threshold,
         )
         
-        if not severity:
-            return False, None
-        
-        # Create breach record
-        await self.breach_service.create_breach(
-            source_api="usgs",
-            disaster_kind="earthquake",
-            metric_name="magnitude",
-            observed_value=event.magnitude,
-            threshold=threshold,
-            severity=severity,
-            observation_time=event.earthquake_time,
-            location_name=event.usgs_place,
-            district=event.resolved_district,
-            province=event.resolved_province,
-            latitude=event.latitude,
-            longitude=event.longitude,
-            seismic_event_id=None,  # Will be set after UPSERT
-        )
-        
-        logger.info(
-            "Earthquake breach detected: M%.1f at %s (severity: %s)",
-            event.magnitude,
-            event.usgs_place or "unknown location",
-            severity,
-        )
-        
-        return True, severity
+        return severity, threshold
 
     # ── Event Processing ──────────────────────────────────────────
 
@@ -451,24 +434,65 @@ class USGSService:
         """
         stats = {
             "events_processed": 0,
-            "events_upserted": 0,
+            "events_upserted": 0,  # total events successfully processed
+            "events_inserted": 0,  # new events
+            "events_updated": 0,   # existing events updated
             "breaches_detected": 0,
             "errors": 0,
         }
+        error_details = {}
         
         for event in events:
             try:
-                # Check for breach
-                has_breach, breach_severity = await self.check_breach(event)
+                # Evaluate breach
+                if event.magnitude >= 4.0:
+                    breach_severity, threshold = self.evaluate_breach(event)
+                else:
+                    breach_severity, threshold = None, None
+                    
+                has_breach = breach_severity is not None
+                
                 event.has_breach = has_breach
                 event.breach_severity = breach_severity
-                
-                if has_breach:
-                    stats["breaches_detected"] += 1
+                if threshold:
+                    event.threshold_id = threshold.threshold_id
                 
                 # UPSERT event to database
-                event_id = await self.seismic_repo.upsert_event(event, cycle_id=cycle_id)
+                event_id, was_inserted = await self.seismic_repo.upsert_event(event, cycle_id=cycle_id)
                 stats["events_upserted"] += 1
+                if was_inserted:
+                    stats["events_inserted"] += 1
+                else:
+                    stats["events_updated"] += 1
+                
+                # Create breach record if one was detected, linking to the new event_id
+                if has_breach and threshold:
+                    try:
+                        stats["breaches_detected"] += 1
+                        await self.breach_service.create_breach(
+                            source_api="usgs",
+                            disaster_kind="earthquake",
+                            metric_name="magnitude",
+                            observed_value=event.magnitude,
+                            threshold=threshold,
+                            severity=breach_severity,
+                            observation_time=event.earthquake_time,
+                            location_name=event.usgs_place,
+                            district=event.resolved_district,
+                            province=event.resolved_province,
+                            latitude=event.latitude,
+                            longitude=event.longitude,
+                            seismic_event_id=event_id,
+                        )
+                    except Exception as breach_e:
+                        logger.error(
+                            "Failed to create breach for event %s (M%.1f): %s",
+                            event.usgs_event_id,
+                            event.magnitude,
+                            str(breach_e),
+                        )
+                        # Best effort: don't abort event processing
+                        stats["breaches_detected"] -= 1
                 
                 logger.debug(
                     "Upserted earthquake: %s (M%.1f, %s, breach=%s)",
@@ -481,20 +505,24 @@ class USGSService:
                 stats["events_processed"] += 1
                 
             except Exception as e:
+                error_msg = str(e)
                 logger.error(
-                    "Failed to process event %s: %s",
+                    "DB write failed for event %s: %s",
                     event.usgs_event_id,
-                    str(e),
+                    error_msg,
                 )
                 stats["errors"] += 1
+                error_details[event.usgs_event_id] = error_msg
                 continue
         
         logger.info(
-            "Processed %d events: %d upserted, %d breaches, %d errors",
+            "Processed %d events: %d inserted, %d updated, %d breaches, %d errors",
             stats["events_processed"],
-            stats["events_upserted"],
+            stats["events_inserted"],
+            stats["events_updated"],
             stats["breaches_detected"],
             stats["errors"],
         )
         
+        stats["error_details"] = error_details
         return stats

@@ -208,7 +208,7 @@ UPDATE_LOCATION_POLL_STATE = """
 ### Collection Flow
 
 ```
-1. Scheduler triggers every 15 minutes
+1. Scheduler triggers every 2 hours
    ↓
 2. get_due_locations()
    - Checks next_poll_due_at for each location
@@ -240,10 +240,10 @@ poll_interval_minutes = 180
 next_poll_due_at = poll_time + timedelta(minutes=180)
 # Result: 2025-07-15 12:00:00 PKT
 
-# Next scheduler check at 09:15
-# Checks: next_poll_due_at (12:00) <= now (09:15)? NO → Skip
-# Next scheduler check at 12:00
-# Checks: next_poll_due_at (12:00) <= now (12:00)? YES → Poll
+# Next scheduler check at 11:00
+# Checks: next_poll_due_at (12:00) <= now (11:00)? NO → Skip
+# Next scheduler check at 13:00
+# Checks: next_poll_due_at (12:00) <= now (13:00)? YES → Poll
 ```
 
 ---
@@ -284,7 +284,7 @@ WHERE location_name IN ('Lahore', 'Karachi', 'Islamabad', ...);
 
 ```bash
 OPENMETEO_BASE_URL=https://api.open-meteo.com/v1/forecast
-OPENMETEO_POLL_INTERVAL_MINUTES=15
+OPENMETEO_POLL_INTERVAL_MINUTES=120
 OPENMETEO_REQUEST_DELAY_MS=500
 ```
 

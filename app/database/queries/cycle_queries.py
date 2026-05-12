@@ -6,6 +6,7 @@ INSERT_CYCLE = """
     INSERT INTO collection_cycles (
         api_id,
         api_name,
+        cycle_type,
         status,
         started_at,
         locations_targeted,
@@ -16,7 +17,7 @@ INSERT_CYCLE = """
         breaches_triggered,
         rate_limit_hits
     ) VALUES (
-        $1, $2, 'running', now(), 0, 0, 0, 0, 0, 0, 0
+        $1, $2, $3, 'running', now(), 0, 0, 0, 0, 0, 0, 0
     )
     RETURNING cycle_id
 """
@@ -32,7 +33,10 @@ UPDATE_CYCLE = """
         rows_upserted = $6,
         rows_inserted = $7,
         breaches_triggered = $8,
-        rate_limit_hits = $9
+        rate_limit_hits = $9,
+        failure_reason = $10,
+        error_summary = $11::jsonb,
+        avg_latency_ms = $12
     WHERE cycle_id = $1
 """
 

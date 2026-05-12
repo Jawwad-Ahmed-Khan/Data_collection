@@ -138,14 +138,16 @@ class DispatchService:
 
     # ── Dispatch Execution ────────────────────────────────────────
 
-    async def dispatch_breach(self, breach: dict[str, Any]) -> tuple[bool, str | None]:
+    async def dispatch_breach(self, breach: dict[str, Any]) -> tuple[bool, str | None, str | None]:
         """Dispatch a single breach to the main system.
         
         Args:
             breach: Breach dictionary from database.
         
         Returns:
-            Tuple of (success, error_message).
+            Tuple of (success, alert_id_or_error_message, error_message).
+            If success is True, the second element is the alert_id (or None), and the third is None.
+            If success is False, the second element is None, and the third is the error message.
         """
         breach_id = str(breach["breach_id"])
         
@@ -179,26 +181,31 @@ class DispatchService:
                     breach["breach_severity"],
                     breach.get("location_name", "unknown"),
                 )
-                return True, None
+                try:
+                    resp_json = response.json()
+                    alert_id = resp_json.get("alert_id") or resp_json.get("id")
+                except Exception:
+                    alert_id = None
+                return True, alert_id, None
             else:
                 error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
                 logger.warning("Failed to dispatch breach %s: %s", breach_id, error_msg)
-                return False, error_msg
+                return False, None, error_msg
             
         except httpx.TimeoutException as e:
             error_msg = f"Timeout: {str(e)}"
             logger.warning("Timeout dispatching breach %s: %s", breach_id, error_msg)
-            return False, error_msg
+            return False, None, error_msg
             
         except httpx.ConnectError as e:
             error_msg = f"Connection error: {str(e)}"
             logger.warning("Connection error dispatching breach %s: %s", breach_id, error_msg)
-            return False, error_msg
+            return False, None, error_msg
             
         except Exception as e:
             error_msg = f"Unexpected error: {str(e)}"
             logger.error("Unexpected error dispatching breach %s: %s", breach_id, error_msg)
-            return False, error_msg
+            return False, None, error_msg
 
     # ── Batch Dispatch ────────────────────────────────────────────
 
@@ -250,11 +257,11 @@ class DispatchService:
                     continue
                 
                 # Dispatch breach
-                success, error_msg = await self.dispatch_breach(breach)
+                success, alert_id, error_msg = await self.dispatch_breach(breach)
                 
                 if success:
                     # Mark as dispatched
-                    await self.breach_repo.mark_dispatched(breach_id)
+                    await self.breach_repo.mark_dispatched(breach_id, main_system_alert_id=alert_id)
                     stats["breaches_dispatched"] += 1
                 else:
                     # Mark as failed

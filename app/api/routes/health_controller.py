@@ -28,6 +28,7 @@ _SERVICE_START_TIME = datetime.now(_PKT)
 
 # Global database pool instance (will be set by main.py)
 _db_pool: DatabasePool | None = None
+_scheduler = None
 
 
 def set_database_pool(db: DatabasePool) -> None:
@@ -37,6 +38,12 @@ def set_database_pool(db: DatabasePool) -> None:
     """
     global _db_pool
     _db_pool = db
+
+
+def set_scheduler(scheduler) -> None:
+    """Set the global scheduler instance."""
+    global _scheduler
+    _scheduler = scheduler
 
 
 def get_database_pool() -> DatabasePool:
@@ -60,6 +67,7 @@ class HealthResponse(BaseModel):
     """Basic health check response."""
     status: str
     database_connected: bool
+    scheduler_running: bool
     uptime_seconds: float
     timestamp_pkt: datetime
 
@@ -72,6 +80,7 @@ class ApiHealthDetail(BaseModel):
     last_success_at: datetime | None
     last_failure_at: datetime | None
     consecutive_failures: int
+    avg_latency_ms: float | None
     is_in_backoff: bool
     backoff_remaining_seconds: float | None
 
@@ -126,18 +135,30 @@ async def get_health(
         Health status response.
     """
     # Check database connectivity
-    database_connected = db.is_connected
+    database_connected = False
+    try:
+        if db.is_connected:
+            await db.fetch_one("SELECT 1")
+            database_connected = True
+    except Exception:
+        pass
+        
+    # Check scheduler status
+    scheduler_running = False
+    if _scheduler is not None and getattr(_scheduler, "scheduler", None):
+        scheduler_running = getattr(_scheduler.scheduler, "running", False)
     
     # Calculate uptime
     now = datetime.now(_PKT)
     uptime_seconds = (now - _SERVICE_START_TIME).total_seconds()
     
     # Determine overall status
-    service_status = "healthy" if database_connected else "degraded"
+    service_status = "healthy" if database_connected and scheduler_running else "degraded"
     
     return HealthResponse(
         status=service_status,
         database_connected=database_connected,
+        scheduler_running=scheduler_running,
         uptime_seconds=uptime_seconds,
         timestamp_pkt=now,
     )
@@ -175,6 +196,7 @@ async def get_api_health(
             last_success_at,
             last_failure_at,
             consecutive_failures,
+            avg_latency_ms,
             backoff_until
         FROM api_registry
         WHERE is_active = TRUE
@@ -203,6 +225,7 @@ async def get_api_health(
                 last_success_at=api_data.get("last_success_at"),
                 last_failure_at=api_data.get("last_failure_at"),
                 consecutive_failures=api_data["consecutive_failures"],
+                avg_latency_ms=api_data.get("avg_latency_ms"),
                 is_in_backoff=is_in_backoff,
                 backoff_remaining_seconds=backoff_remaining_seconds,
             )

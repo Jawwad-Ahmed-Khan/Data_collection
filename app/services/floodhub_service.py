@@ -129,12 +129,11 @@ class FloodHubService:
             diff = f_time - issued_at
             hours = int(diff.total_seconds() / 3600)
             days = hours // 24
-            
+
             # DEBUG
-            print(f"DEBUG: Calculated hours={hours} for {f_time} (issued: {issued_at})")
-            
-            # Skip historical points to satisfy DB constraints (day_offset >= 0)
-            if hours < 0:
+            logger.debug(f"Calculated hours={hours} for {f_time} (issued: {issued_at})")
+
+            # Skip historical points to satisfy DB constraints (day_offset >= 0)            if hours < 0:
                 return None
                 
             return FloodGaugeForecastBase(

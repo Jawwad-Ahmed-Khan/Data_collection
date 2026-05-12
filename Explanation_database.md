@@ -27,7 +27,7 @@ This database does not store NGO information. It does not store tasks. It does n
 │  SOURCE 1: USGS Earthquake API                          │
 │  What it provides: Real-time earthquake events          │
 │  Coverage: Pakistan geographic bounding box             │
-│  Update frequency: Every 60 seconds                     │
+│  Update frequency: Every 5 minutes                      │
 │  Data type: Event-based (each earthquake = one record)  │
 ├─────────────────────────────────────────────────────────┤
 │  SOURCE 2: Open-Meteo Weather API                       │

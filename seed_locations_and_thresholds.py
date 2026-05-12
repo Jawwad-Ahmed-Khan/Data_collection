@@ -52,22 +52,7 @@ async def seed_data():
                     $10, $11, $12::risk_zone, $13::risk_zone, 
                     $14::vulnerability_level, ST_SetSRID(ST_MakePoint($9::float8, $8::float8), 4326), TRUE
                 )
-                ON CONFLICT (location_key) DO UPDATE SET
-                    location_name = EXCLUDED.location_name,
-                    local_name = EXCLUDED.local_name,
-                    location_tier = EXCLUDED.location_tier,
-                    district = EXCLUDED.district,
-                    division = EXCLUDED.division,
-                    province = EXCLUDED.province,
-                    latitude = EXCLUDED.latitude,
-                    longitude = EXCLUDED.longitude,
-                    seismic_zone = EXCLUDED.seismic_zone,
-                    population = EXCLUDED.population,
-                    flood_risk_zone = EXCLUDED.flood_risk_zone,
-                    heat_risk_zone = EXCLUDED.heat_risk_zone,
-                    infrastructure_quality = EXCLUDED.infrastructure_quality,
-                    coordinates = EXCLUDED.coordinates,
-                    updated_at = NOW();
+                ON CONFLICT (location_key) DO NOTHING;
             """, key, name, local, tier, dist, div, prov, lat, lon, seismic, pop, f_zone, h_zone, infra)
 
         print("\n--- Upserting Disaster Thresholds ---")

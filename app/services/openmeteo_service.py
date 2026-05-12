@@ -115,7 +115,7 @@ class OpenMeteoService:
             "wind_gusts_10m",
             "wind_direction_10m",
             "relative_humidity_2m",
-            "surface_pressure",
+            "pressure_msl",
             "visibility",
             "cloud_cover",
             "uv_index",
@@ -151,6 +151,8 @@ class OpenMeteoService:
             "daily": ",".join(daily_vars),
             "timezone": "Asia/Karachi",
             "forecast_days": 5,
+            "wind_speed_unit": "kmh",
+            "precipitation_unit": "mm",
         }
 
     def build_hourly_params(
@@ -181,7 +183,7 @@ class OpenMeteoService:
             "wind_gusts_10m",
             "wind_direction_10m",
             "relative_humidity_2m",
-            "surface_pressure",
+            "pressure_msl",
             "visibility",
             "cloud_cover",
             "uv_index",
@@ -196,6 +198,8 @@ class OpenMeteoService:
             "hourly": ",".join(hourly_vars),
             "timezone": "Asia/Karachi",
             "forecast_days": 5,
+            "wind_speed_unit": "kmh",
+            "precipitation_unit": "mm",
         }
 
     def build_daily_params(
@@ -239,6 +243,8 @@ class OpenMeteoService:
             "daily": ",".join(daily_vars),
             "timezone": "Asia/Karachi",
             "forecast_days": 5,
+            "wind_speed_unit": "kmh",
+            "precipitation_unit": "mm",
         }
 
     # ── Hourly Data Parsing ───────────────────────────────────────
@@ -263,42 +269,61 @@ class OpenMeteoService:
         if not times:
             logger.warning("No hourly data for location %s", location.location_name)
             return []
+            
+        if len(times) != 120:
+            logger.warning("Expected 120 hourly records for %s, got %d", location.location_name, len(times))
         
         records = []
         
         for i, time_str in enumerate(times):
             try:
-                # Parse timestamp
-                forecast_dt = datetime.fromisoformat(time_str).replace(tzinfo=_PKT)
-                forecast_date = forecast_dt.date()
+                from datetime import timezone
+                # Parse timestamp and convert local PKT to UTC
+                naive_dt = datetime.fromisoformat(time_str)
+                pkt_dt = naive_dt.replace(tzinfo=_PKT)
+                utc_dt = pkt_dt.astimezone(timezone.utc)
+                forecast_date = pkt_dt.date()
                 
                 # Calculate day offset
                 today = datetime.now(_PKT).date()
                 day_offset = (forecast_date - today).days
                 
                 # Extract values (with safe indexing)
-                # double precision columns: convert to float
+                # double precision columns: strictly preserve None if missing
                 temp_c = to_decimal(self._safe_get(hourly_data.get("temperature_2m"), i))
                 temp_apparent_c = to_decimal(self._safe_get(hourly_data.get("apparent_temperature"), i))
                 temp_dewpoint_c = to_decimal(self._safe_get(hourly_data.get("dew_point_2m"), i))
-                precip_mm = to_decimal(self._safe_get(hourly_data.get("precipitation"), i, 0.0))
+                precip_mm = to_decimal(self._safe_get(hourly_data.get("precipitation"), i))
                 rain_mm = to_decimal(self._safe_get(hourly_data.get("rain"), i))
                 snowfall_cm = to_decimal(self._safe_get(hourly_data.get("snowfall"), i))
                 snow_depth_m = to_decimal(self._safe_get(hourly_data.get("snow_depth"), i))
                 wind_speed_kmh = to_decimal(self._safe_get(hourly_data.get("wind_speed_10m"), i))
                 wind_gusts_kmh = to_decimal(self._safe_get(hourly_data.get("wind_gusts_10m"), i))
-                pressure_hpa = to_decimal(self._safe_get(hourly_data.get("surface_pressure"), i))
+                pressure_hpa = to_decimal(self._safe_get(hourly_data.get("pressure_msl"), i))
                 uv_index = to_decimal(self._safe_get(hourly_data.get("uv_index"), i))
                 cape_jkg = to_decimal(self._safe_get(hourly_data.get("cape"), i))
                 
-                # SMALLINT/INT columns: keep as-is
-                precip_prob_pct = self._safe_get(hourly_data.get("precipitation_probability"), i)
-                wind_direction_deg = self._safe_get(hourly_data.get("wind_direction_10m"), i)
-                humidity_pct = self._safe_get(hourly_data.get("relative_humidity_2m"), i)
-                visibility_m = self._safe_get(hourly_data.get("visibility"), i)
-                cloud_cover_pct = self._safe_get(hourly_data.get("cloud_cover"), i)
-                weather_code = self._safe_get(hourly_data.get("weather_code"), i)
-                is_daytime = self._safe_get(hourly_data.get("is_day"), i, 1) == 1
+                # SMALLINT/INT columns: convert and clamp safely
+                raw_prob = self._safe_get(hourly_data.get("precipitation_probability"), i)
+                precip_prob_pct = max(0, min(100, int(raw_prob))) if raw_prob is not None else None
+                
+                raw_dir = self._safe_get(hourly_data.get("wind_direction_10m"), i)
+                wind_direction_deg = int(raw_dir) if raw_dir is not None else None
+                
+                raw_hum = self._safe_get(hourly_data.get("relative_humidity_2m"), i)
+                humidity_pct = max(0, min(100, int(raw_hum))) if raw_hum is not None else None
+                
+                raw_vis = self._safe_get(hourly_data.get("visibility"), i)
+                visibility_m = int(raw_vis) if raw_vis is not None else None
+                
+                raw_cloud = self._safe_get(hourly_data.get("cloud_cover"), i)
+                cloud_cover_pct = max(0, min(100, int(raw_cloud))) if raw_cloud is not None else None
+                
+                raw_code = self._safe_get(hourly_data.get("weather_code"), i)
+                weather_code = int(raw_code) if raw_code is not None else None
+                
+                raw_day = self._safe_get(hourly_data.get("is_day"), i)
+                is_daytime = bool(int(raw_day)) if raw_day is not None else None
                 
                 # Compute wind cardinal direction
                 wind_cardinal = self._wind_to_cardinal(wind_direction_deg) if wind_direction_deg is not None else None
@@ -315,7 +340,7 @@ class OpenMeteoService:
                     province=location.province,
                     latitude=location.latitude,
                     longitude=location.longitude,
-                    forecast_for_datetime=forecast_dt,
+                    forecast_for_datetime=utc_dt,
                     forecast_date=forecast_date,
                     day_offset=day_offset,
                     temp_c=temp_c,
@@ -348,15 +373,19 @@ class OpenMeteoService:
                 logger.error("Failed to parse hourly record %d: %s", i, str(e))
                 continue
         
-        # Compute rolling sums
-        self._compute_rolling_sums(records)
+        # Compute rolling sums from API array
+        precip_array = hourly_data.get("precipitation", [])
+        self._compute_rolling_sums(records, precip_array)
         
         # Set weather flags
         for record in records:
             self._set_weather_flags(record)
+            
+        # Filter strictly to 0-4 days (5-day window)
+        future_records = [r for r in records if 0 <= r.day_offset <= 4]
         
-        logger.info("Parsed %d hourly records for %s", len(records), location.location_name)
-        return records
+        logger.info("Parsed %d hourly records for %s", len(future_records), location.location_name)
+        return future_records
 
     def _safe_get(self, array: list | None, index: int, default: Any = None) -> Any:
         """Safely get value from array at index."""
@@ -365,17 +394,32 @@ class OpenMeteoService:
         value = array[index]
         return value if value is not None else default
 
-    def _compute_rolling_sums(self, records: list[WeatherHourlyWindowBase]) -> None:
-        """Compute rolling precipitation sums (3h, 6h, 12h, 24h, 72h) for each record."""
+    def _compute_rolling_sums(self, records: list[WeatherHourlyWindowBase], precip_array: list[Any]) -> None:
+        """Compute rolling precipitation sums directly from the API array."""
+        # Convert API array to a list of floats (or None)
+        precip_floats = []
+        for p in precip_array:
+            try:
+                precip_floats.append(float(p) if p is not None else None)
+            except (ValueError, TypeError):
+                precip_floats.append(None)
+                
+        # Ensure it has enough elements to match records
+        while len(precip_floats) < len(records):
+            precip_floats.append(None)
+
         for i, record in enumerate(records):
-            # Helper for rolling sum computation
-            def get_rolling_sum(window_size: int) -> Decimal:
-                total = Decimal(0)
-                for j in range(max(0, i - window_size + 1), i + 1):
-                    val = records[j].precip_mm
-                    if val is not None:
-                        total += Decimal(str(val))
-                return total if total > 0 else Decimal(0)
+            def get_rolling_sum(window_size: int) -> Decimal | None:
+                start_idx = max(0, i - window_size + 1)
+                window = precip_floats[start_idx : i + 1]
+                
+                # If ALL elements in the window are None, return None
+                if all(val is None for val in window):
+                    return None
+                    
+                # Replace None with 0.0 for accumulation
+                total = sum(val if val is not None else 0.0 for val in window)
+                return Decimal(str(round(total, 3)))
 
             record.precip_3h_mm = get_rolling_sum(3)
             record.precip_6h_mm = get_rolling_sum(6)
@@ -384,47 +428,53 @@ class OpenMeteoService:
             record.precip_72h_mm = get_rolling_sum(72)
 
     def _set_weather_flags(self, record: WeatherHourlyWindowBase) -> None:
-        """Set weather flags based on thresholds."""
-        # Extreme heat (>45°C)
-        if record.temp_c is not None and record.temp_c >= Decimal("45.0"):
+        """Set weather flags based on strict thresholds."""
+        # Extreme heat: temp_apparent_c >= 47.0 OR temp_c >= 45.0
+        if (record.temp_apparent_c is not None and record.temp_apparent_c >= Decimal("47.0")) or \
+           (record.temp_c is not None and record.temp_c >= Decimal("45.0")):
             record.flag_extreme_heat = True
         
-        # Heatwave (>40°C)
+        # Heatwave: temp_c >= 40.0
         if record.temp_c is not None and record.temp_c >= Decimal("40.0"):
             record.flag_heatwave = True
         
-        # Heavy rain (>50mm in 24h)
-        if record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("50.0"):
+        # Heavy rain: precip_mm >= 15.0 OR precip_24h_mm >= 50.0
+        if (record.precip_mm is not None and record.precip_mm >= Decimal("15.0")) or \
+           (record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("50.0")):
             record.flag_heavy_rain = True
         
-        # Very heavy rain (>100mm in 24h)
-        if record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("100.0"):
+        # Very heavy rain: precip_mm >= 25.0 OR precip_24h_mm >= 100.0
+        if (record.precip_mm is not None and record.precip_mm >= Decimal("25.0")) or \
+           (record.precip_24h_mm is not None and record.precip_24h_mm >= Decimal("100.0")):
             record.flag_very_heavy_rain = True
         
-        # Storm (wind gusts >60 km/h)
-        if record.wind_gusts_kmh is not None and record.wind_gusts_kmh >= Decimal("60.0"):
+        # Storm: weather_code in (95, 96, 99) OR (cape_jkg >= 1000 and weather_code >= 80)
+        is_storm_code = record.weather_code in (95, 96, 99)
+        high_cape_storm = (record.cape_jkg is not None and record.cape_jkg >= Decimal("1000.0") and 
+                           record.weather_code is not None and record.weather_code >= 80)
+        if is_storm_code or high_cape_storm:
             record.flag_storm = True
         
-        # Severe storm (wind gusts >90 km/h)
-        if record.wind_gusts_kmh is not None and record.wind_gusts_kmh >= Decimal("90.0"):
+        # Severe storm: weather_code in (96, 99) OR (cape_jkg >= 2500)
+        if record.weather_code in (96, 99) or (record.cape_jkg is not None and record.cape_jkg >= Decimal("2500.0")):
             record.flag_severe_storm = True
         
-        # Cold wave (<5°C)
-        if record.temp_c is not None and record.temp_c <= Decimal("5.0"):
-            record.flag_cold_wave = True
+        # Cold wave: gilgit_baltistan/azad_kashmir <= -5.0, others <= 0.0
+        if record.temp_c is not None:
+            if record.province in ('gilgit_baltistan', 'azad_kashmir') and record.temp_c <= Decimal("-5.0"):
+                record.flag_cold_wave = True
+            elif record.province not in ('gilgit_baltistan', 'azad_kashmir') and record.temp_c <= Decimal("0.0"):
+                record.flag_cold_wave = True
         
-        # Dust storm (weather code indicates dust + high wind)
-        # WMO codes for dust/sand: Not in standard codes, but we check for clear/haze + high wind
-        if record.wind_speed_kmh is not None and record.wind_speed_kmh >= Decimal("40.0"):
-            # Dust storm likely if high wind + low visibility + clear/haze conditions
-            if record.visibility_m is not None and record.visibility_m < 1000:
-                if record.weather_condition in ['clear', 'haze', 'partly_cloudy']:
-                    record.flag_dust_storm = True
+        # Dust storm: wind_gusts >= 62 AND humidity <= 20 AND province in ('balochistan', 'sindh', 'punjab')
+        if (record.wind_gusts_kmh is not None and record.wind_gusts_kmh >= Decimal("62.0") and
+            record.humidity_pct is not None and record.humidity_pct <= 20 and
+            record.province in ('balochistan', 'sindh', 'punjab')):
+            record.flag_dust_storm = True
         
-        # Dense fog (weather code indicates fog + low visibility)
-        if record.weather_condition == 'fog':
-            if record.visibility_m is not None and record.visibility_m < 200:
-                record.flag_dense_fog = True
+        # Dense fog: weather_code in (45, 48) AND visibility_m < 200
+        if record.weather_code in (45, 48) and record.visibility_m is not None and record.visibility_m < 200:
+            record.flag_dense_fog = True
 
     def _wind_to_cardinal(self, degrees: int | float) -> str:
         """Convert wind direction degrees to cardinal direction."""
@@ -487,6 +537,9 @@ class OpenMeteoService:
         if not times:
             logger.warning("No daily data for location %s", location.location_name)
             return []
+            
+        if len(times) != 5:
+            logger.warning("Expected 5 daily records for %s, got %d", location.location_name, len(times))
         
         summaries = []
         today = datetime.now(_PKT).date()
@@ -497,37 +550,44 @@ class OpenMeteoService:
                 day_offset = (summary_date - today).days
                 
                 # Extract values
-                # double precision columns: convert to float
+                # double precision columns: convert to float safely preserving None
                 temp_max_c = to_decimal(self._safe_get(daily_data.get("temperature_2m_max"), i))
                 temp_min_c = to_decimal(self._safe_get(daily_data.get("temperature_2m_min"), i))
                 feels_like_max_c = to_decimal(self._safe_get(daily_data.get("apparent_temperature_max"), i))
                 feels_like_min_c = to_decimal(self._safe_get(daily_data.get("apparent_temperature_min"), i))
                 
-                precip_total_mm = to_decimal(self._safe_get(daily_data.get("precipitation_sum"), i, 0.0))
+                precip_total_mm = to_decimal(self._safe_get(daily_data.get("precipitation_sum"), i))
                 rain_total_mm = to_decimal(self._safe_get(daily_data.get("rain_sum"), i))
                 snowfall_total_cm = to_decimal(self._safe_get(daily_data.get("snowfall_sum"), i))
-                precip_hours = self._safe_get(daily_data.get("precipitation_hours"), i)
-                precip_prob_max_pct = self._safe_get(daily_data.get("precipitation_probability_max"), i)
+                raw_precip_hours = self._safe_get(daily_data.get("precipitation_hours"), i)
+                precip_hours = int(raw_precip_hours) if raw_precip_hours is not None else None
+                
+                raw_prob_max = self._safe_get(daily_data.get("precipitation_probability_max"), i)
+                precip_prob_max_pct = max(0, min(100, int(raw_prob_max))) if raw_prob_max is not None else None
                 
                 wind_speed_max_kmh = to_decimal(self._safe_get(daily_data.get("wind_speed_10m_max"), i))
                 wind_gusts_max_kmh = to_decimal(self._safe_get(daily_data.get("wind_gusts_10m_max"), i))
-                wind_dir_dominant = self._safe_get(daily_data.get("wind_direction_10m_dominant"), i)
+                
+                raw_wind_dir = self._safe_get(daily_data.get("wind_direction_10m_dominant"), i)
+                wind_dir_dominant = int(raw_wind_dir) if raw_wind_dir is not None else None
                 
                 uv_index_max = to_decimal(self._safe_get(daily_data.get("uv_index_max"), i))
                 
                 # Day Overview
-                weather_code_daily = self._safe_get(daily_data.get("weather_code"), i)
+                raw_code_daily = self._safe_get(daily_data.get("weather_code"), i)
+                weather_code_daily = int(raw_code_daily) if raw_code_daily is not None else None
                 dominant_condition, _ = self._decode_weather_code(weather_code_daily)
                 
                 # daylight_duration is in seconds, convert to hours
                 daylight_duration_s = to_decimal(self._safe_get(daily_data.get("daylight_duration"), i))
                 daylight_hours = (daylight_duration_s / Decimal("3600.0")).quantize(Decimal("0.01")) if daylight_duration_s is not None else None
 
-                # Parse sunrise/sunset
+                # Parse sunrise/sunset and convert to UTC
+                from datetime import timezone
                 sunrise_str = self._safe_get(daily_data.get("sunrise"), i)
                 sunset_str = self._safe_get(daily_data.get("sunset"), i)
-                sunrise_at = datetime.fromisoformat(sunrise_str).replace(tzinfo=_PKT) if sunrise_str else None
-                sunset_at = datetime.fromisoformat(sunset_str).replace(tzinfo=_PKT) if sunset_str else None
+                sunrise_at = datetime.fromisoformat(sunrise_str).replace(tzinfo=_PKT).astimezone(timezone.utc) if sunrise_str else None
+                sunset_at = datetime.fromisoformat(sunset_str).replace(tzinfo=_PKT).astimezone(timezone.utc) if sunset_str else None
                 
                 # Create summary
                 summary = WeatherDailySummaryBase(
@@ -569,8 +629,11 @@ class OpenMeteoService:
                 logger.error("Failed to parse daily record %d: %s", i, str(e))
                 continue
         
-        logger.info("Parsed %d daily summaries for %s", len(summaries), location.location_name)
-        return summaries
+        # Filter strictly to 0-4 days
+        future_summaries = [s for s in summaries if 0 <= s.day_offset <= 4]
+        
+        logger.info("Parsed %d daily summaries for %s", len(future_summaries), location.location_name)
+        return future_summaries
 
     def _set_daily_flags(self, summary: WeatherDailySummaryBase) -> None:
         """Set daily weather flags based on thresholds."""
@@ -583,10 +646,10 @@ class OpenMeteoService:
         if summary.precip_total_mm is not None and summary.precip_total_mm >= Decimal("50.0"):
             summary.flag_heavy_rain_day = True
         
-        if summary.wind_gusts_max_kmh is not None and summary.wind_gusts_max_kmh >= Decimal("60.0"):
+        if summary.weather_code_dominant in (95, 96, 99):
             summary.flag_storm_day = True
         
-        if summary.temp_min_c is not None and summary.temp_min_c <= Decimal("5.0"):
+        if summary.temp_min_c is not None and summary.temp_min_c <= Decimal("-5.0"):
             summary.flag_cold_wave_day = True
 
     # ── Breach Detection ──────────────────────────────────────────
@@ -594,182 +657,84 @@ class OpenMeteoService:
     async def check_breaches(
         self,
         record: WeatherHourlyWindowBase,
+        suppressed_metrics: set[str],
     ) -> list[tuple[bool, str | None, str | None, Decimal | None, Decimal | None]]:
-        """Check if weather metrics cross thresholds for ALL disaster types.
-        
-        Checks for:
-        1. Heatwave (temp_max_c)
-        2. Heavy Rain (precip_1h_mm, precip_24h_mm, precip_72h_mm)
-        3. Cyclone/Storm (wind_gusts_kmh, cape_jkg)
-        4. Cold Wave (temp_min_c)
-        5. Dust Storm (wind_speed + visibility)
-        6. Flash Flood (precip_accumulation)
-        7. Drought (not applicable to hourly data)
+        """Check if weather metrics cross thresholds and create breaches.
         
         Args:
             record: Hourly weather record.
+            suppressed_metrics: Set of metric names already breached in this location's cycle.
         
         Returns:
             List of tuples: (has_breach, severity, metric_name, observed_value, threshold_value)
         """
         breaches = []
         
-        # 1. HEATWAVE - Check temperature thresholds
-        if record.temp_c is not None:
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
+        is_forecast = record.forecast_for_datetime > now_utc
+        horizon_s = (record.forecast_for_datetime - now_utc).total_seconds()
+        forecast_horizon_h = max(0, round(horizon_s / 3600))
+        
+        async def _evaluate_metric(metric_name: str, disaster_kind: str, value: Decimal | None):
+            if value is None:
+                return
+            if metric_name not in ["temp_max_c", "temp_min_c", "temp_c"] and value <= 0:
+                return
+            if metric_name in suppressed_metrics:
+                return
+                
             threshold = self.breach_service.find_applicable_threshold(
-                metric_name="temp_max_c",
-                disaster_kind="heatwave",
+                metric_name=metric_name,
+                disaster_kind=disaster_kind,
                 province=record.province,
                 district=record.district,
             )
             
             if threshold:
                 severity = self.breach_service.check_breach(
-                    value=float(record.temp_c),
+                    value=float(value),
                     threshold=threshold,
                 )
                 
                 if severity:
                     threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "temp_max_c", record.temp_c, Decimal(str(threshold_value))))
+                    breaches.append((True, severity, metric_name, value, Decimal(str(threshold_value))))
+                    
+                    await self.breach_service.create_breach(
+                        source_api="open_meteo",
+                        disaster_kind=disaster_kind,
+                        metric_name=metric_name,
+                        observed_value=float(value),
+                        threshold=threshold,
+                        severity=severity,
+                        observation_time=record.forecast_for_datetime,
+                        location_name=record.location_name,
+                        district=record.district,
+                        province=record.province,
+                        latitude=record.latitude,
+                        longitude=record.longitude,
+                        weather_location_id=record.location_id,
+                        is_forecast_breach=is_forecast,
+                        forecast_horizon_h=forecast_horizon_h,
+                    )
+                    
+                    suppressed_metrics.add(metric_name)
+
+        await _evaluate_metric("temp_max_c", "heatwave", record.temp_c)
+        await _evaluate_metric("precip_1h_mm", "heavy_rain", record.precip_mm)
+        await _evaluate_metric("precip_24h_mm", "heavy_rain", record.precip_24h_mm)
+        await _evaluate_metric("precip_72h_mm", "flash_flood", record.precip_72h_mm)
+        await _evaluate_metric("wind_gusts_kmh", "cyclone", record.wind_gusts_kmh)
+        await _evaluate_metric("cape_jkg", "cyclone", record.cape_jkg)
+        await _evaluate_metric("temp_min_c", "cold_wave", record.temp_c)
         
-        # 2. HEAVY RAIN - Check hourly precipitation
-        if record.precip_mm is not None and record.precip_mm > 0:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="precip_1h_mm",
-                disaster_kind="heavy_rain",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.precip_mm),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "precip_1h_mm", record.precip_mm, Decimal(str(threshold_value))))
-        
-        # 3. HEAVY RAIN - Check 24-hour accumulation
-        if record.precip_24h_mm is not None and record.precip_24h_mm > 0:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="precip_24h_mm",
-                disaster_kind="heavy_rain",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.precip_24h_mm),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "precip_24h_mm", record.precip_24h_mm, Decimal(str(threshold_value))))
-        
-        # 4. FLASH FLOOD - Check 72-hour accumulation
-        if record.precip_72h_mm is not None and record.precip_72h_mm > 0:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="precip_72h_mm",
-                disaster_kind="flash_flood",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.precip_72h_mm),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "precip_72h_mm", record.precip_72h_mm, Decimal(str(threshold_value))))
-        
-        # 5. CYCLONE/STORM - Check wind gusts
-        if record.wind_gusts_kmh is not None:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="wind_gusts_kmh",
-                disaster_kind="cyclone",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.wind_gusts_kmh),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "wind_gusts_kmh", record.wind_gusts_kmh, Decimal(str(threshold_value))))
-        
-        # 6. SEVERE STORM - Check CAPE (Convective Available Potential Energy)
-        if record.cape_jkg is not None and record.cape_jkg > 0:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="cape_jkg",
-                disaster_kind="cyclone",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.cape_jkg),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "cape_jkg", record.cape_jkg, Decimal(str(threshold_value))))
-        
-        # 7. COLD WAVE - Check minimum temperature
-        if record.temp_c is not None:
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="temp_min_c",
-                disaster_kind="cold_wave",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.temp_c),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "temp_min_c", record.temp_c, Decimal(str(threshold_value))))
-        
-        # 8. DUST STORM - Check wind speed + visibility combination
         if (record.wind_speed_kmh is not None and 
             record.visibility_m is not None and 
             record.wind_speed_kmh >= Decimal("40.0") and 
             record.visibility_m < 1000):
-            
-            threshold = self.breach_service.find_applicable_threshold(
-                metric_name="wind_speed_kmh",
-                disaster_kind="dust_storm",
-                province=record.province,
-                district=record.district,
-            )
-            
-            if threshold:
-                severity = self.breach_service.check_breach(
-                    value=float(record.wind_speed_kmh),
-                    threshold=threshold,
-                )
-                
-                if severity:
-                    threshold_value = self.breach_service._get_threshold_value(threshold, severity)
-                    breaches.append((True, severity, "wind_speed_kmh", record.wind_speed_kmh, Decimal(str(threshold_value))))
-        
+            await _evaluate_metric("wind_speed_kmh", "dust_storm", record.wind_speed_kmh)
+
         return breaches
 
     # ── Data Processing ───────────────────────────────────────────
@@ -799,6 +764,13 @@ class OpenMeteoService:
             "errors": 0,
         }
         
+        # Track breached metrics per location to suppress duplicates in the 120h loop
+        suppressed_metrics: set[str] = set()
+        
+        # Track daily worst severity (day_offset -> severity_str)
+        daily_worst_severity: dict[int, str] = {}
+        severity_order = {"extreme": 0, "emergency": 1, "warning": 2, "watch": 3}
+        
         # Process hourly records
         for record in hourly_records:
             try:
@@ -807,11 +779,10 @@ class OpenMeteoService:
                 record.data_freshness_minutes = data_freshness_minutes
                 
                 # Check for ALL breach types
-                breaches = await self.check_breaches(record)
+                breaches = await self.check_breaches(record, suppressed_metrics)
                 
                 if breaches:
                     # Find the most severe breach
-                    severity_order = {"extreme": 0, "emergency": 1, "warning": 2, "watch": 3}
                     breaches.sort(key=lambda x: severity_order.get(x[1], 99))
                     
                     # Use the worst breach for the record
@@ -824,6 +795,12 @@ class OpenMeteoService:
                     
                     stats["breaches_detected"] += len(breaches)
                     
+                    # Update daily worst severity
+                    if record.day_offset is not None and record.breach_severity:
+                        current_worst = daily_worst_severity.get(record.day_offset)
+                        if current_worst is None or severity_order.get(record.breach_severity, 99) < severity_order.get(current_worst, 99):
+                            daily_worst_severity[record.day_offset] = record.breach_severity
+                    
                     logger.debug(
                         "Detected %d breach(es) for %s at %s: worst=%s (%s)",
                         len(breaches),
@@ -833,14 +810,19 @@ class OpenMeteoService:
                         worst_breach[1],
                     )
                 
-                # UPSERT to database
-                await self.weather_repo.upsert_hourly(record)
-                stats["hourly_upserted"] += 1
-                
             except Exception as e:
                 logger.error("Failed to process hourly record: %s", str(e))
                 stats["errors"] += 1
                 continue
+                
+        # Batch UPSERT to database
+        if hourly_records:
+            try:
+                upserted = await self.weather_repo.upsert_hourly_batch(hourly_records)
+                stats["hourly_upserted"] += upserted
+            except Exception as e:
+                logger.error("Failed to batch upsert hourly records: %s", str(e))
+                stats["errors"] += len(hourly_records)
         
         # Process daily summaries
         for summary in daily_summaries:
@@ -849,12 +831,93 @@ class OpenMeteoService:
                 summary.cycle_id = cycle_id
                 summary.data_freshness_minutes = data_freshness_minutes
                 
-                await self.weather_repo.upsert_daily(summary)
-                stats["daily_upserted"] += 1
+                # Assign worst hourly severity for this day
+                if summary.day_offset in daily_worst_severity:
+                    summary.worst_breach_severity = daily_worst_severity[summary.day_offset]
+            except Exception as e:
+                logger.error("Failed to process daily summary metadata: %s", str(e))
+                continue
+                
+        # Batch UPSERT daily summaries
+        if daily_summaries:
+            try:
+                upserted = await self.weather_repo.upsert_daily_batch(daily_summaries)
+                stats["daily_upserted"] += upserted
+            except Exception as e:
+                logger.error("Failed to batch upsert daily summaries: %s", str(e))
+                stats["errors"] += len(daily_summaries)
+                
+        # Upsert 5-day forecast representation
+        for summary in daily_summaries:
+            try:
+                day_label = summary.summary_date.strftime("%a") if summary.day_offset > 1 else ("Tomorrow" if summary.day_offset == 1 else "Today")
+                forecast_5d = Weather5DaySummaryBase(
+                    location_id=summary.location_id,
+                    location_key=summary.location_key,
+                    location_name=summary.location_name,
+                    district=summary.district,
+                    province=summary.province,
+                    summary_date=summary.summary_date,
+                    day_offset=summary.day_offset,
+                    day_label=day_label,
+                    temp_max_c=summary.temp_max_c,
+                    temp_min_c=summary.temp_min_c,
+                    feels_like_max_c=summary.feels_like_max_c,
+                    precip_total_mm=summary.precip_total_mm,
+                    precip_prob_max_pct=summary.precip_prob_max_pct,
+                    wind_speed_max_kmh=summary.wind_speed_max_kmh,
+                    wind_gusts_max_kmh=summary.wind_gusts_max_kmh,
+                    uv_index_max=summary.uv_index_max,
+                    dominant_condition=summary.dominant_condition,
+                    sunrise_at=summary.sunrise_at,
+                    sunset_at=summary.sunset_at,
+                    flag_extreme_heat_day=summary.flag_extreme_heat_day,
+                    flag_heatwave_day=summary.flag_heatwave_day,
+                    flag_heavy_rain_day=summary.flag_heavy_rain_day,
+                    flag_storm_day=summary.flag_storm_day,
+                    flag_cold_wave_day=summary.flag_cold_wave_day,
+                    worst_breach_severity=summary.worst_breach_severity
+                )
+                await self.weather_repo.upsert_5day_forecast(forecast_5d)
                 
             except Exception as e:
-                logger.error("Failed to process daily summary: %s", str(e))
+                logger.error("Failed to process 5-day forecast: %s", str(e))
                 stats["errors"] += 1
                 continue
+                
+        # Find current hour and upsert current weather
+        now = datetime.now(_PKT)
+        current_record = None
+        min_diff = float('inf')
+        for record in hourly_records:
+            if record.day_offset >= 0:
+                diff = abs((record.forecast_for_datetime - now).total_seconds())
+                if diff < min_diff:
+                    min_diff = diff
+                    current_record = record
+                    
+        if current_record:
+            try:
+                current_weather = CurrentWeatherLocationBase(
+                    location_id=current_record.location_id,
+                    location_key=current_record.location_key,
+                    location_name=current_record.location_name,
+                    temp_c=current_record.temp_c,
+                    temp_apparent_c=current_record.temp_apparent_c,
+                    precip_mm=current_record.precip_mm,
+                    wind_speed_kmh=current_record.wind_speed_kmh,
+                    humidity_pct=current_record.humidity_pct,
+                    pressure_hpa=current_record.pressure_hpa,
+                    weather_condition=current_record.weather_condition,
+                    weather_description=current_record.weather_description,
+                    is_daytime=current_record.is_daytime,
+                    observation_time=now,
+                    data_age_minutes=data_freshness_minutes,
+                    data_freshness="fresh" if data_freshness_minutes is not None and data_freshness_minutes < 120 else "stale"
+                )
+                await self.weather_repo.upsert_current_weather(current_weather)
+            except Exception as e:
+                logger.error("Failed to upsert current weather: %s", str(e))
+                stats["errors"] += 1
         
         return stats

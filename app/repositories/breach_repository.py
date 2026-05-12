@@ -24,6 +24,7 @@ class BreachRepository(BaseRepository):
         breach: ThresholdBreachLogBase,
         is_duplicate: bool = False,
         duplicate_of_breach_id: UUID | None = None,
+        suppression_window_used_m: int | None = None,
     ) -> str:
         """Insert a newly detected breach alert into the queue. Returns the UUID."""
         row = await self.db.fetch_one(
@@ -50,10 +51,25 @@ class BreachRepository(BaseRepository):
             breach.forecast_horizon_h,
             is_duplicate,
             duplicate_of_breach_id,
+            suppression_window_used_m,
         )
         if not row:
             raise RuntimeError("INSERT_BREACH_LOG failed to return breach_id")
         return str(row["breach_id"])
+
+    async def find_recent_seismic_breach(
+        self,
+        seismic_event_id: UUID,
+        severity: str,
+    ) -> UUID | None:
+        """Find a recent non-duplicate breach for the same seismic event and severity."""
+        from app.database.queries.breach_queries import FIND_RECENT_SEISMIC_BREACH
+        row = await self.db.fetch_one(
+            FIND_RECENT_SEISMIC_BREACH,
+            seismic_event_id,
+            severity,
+        )
+        return UUID(row["breach_id"]) if row else None
 
     async def find_recent_breach(
         self,
@@ -100,9 +116,9 @@ class BreachRepository(BaseRepository):
         )
         return [dict(row) for row in rows]
 
-    async def mark_dispatched(self, breach_id: str) -> None:
+    async def mark_dispatched(self, breach_id: str, main_system_alert_id: UUID | str | None = None) -> None:
         """Mark a breach as successfully dispatched to the main system."""
-        await self.db.execute(MARK_BREACH_DISPATCHED, breach_id)
+        await self.db.execute(MARK_BREACH_DISPATCHED, breach_id, main_system_alert_id)
 
     async def mark_dispatch_failed(self, breach_id: str, error_msg: str) -> None:
         """Mark a breach as failed so the dispatcher can retry it later."""

@@ -27,11 +27,14 @@ INSERT_BREACH_LOG = """
         forecast_horizon_h,
         is_duplicate,
         duplicate_of_breach_id,
-        dispatch_status
+        dispatch_status,
+        suppression_window_used_m
     ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
         ST_SetSRID(ST_MakePoint($12, $11), 4326),
-        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, 'pending'
+        $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+        CASE WHEN $21 = TRUE THEN 'suppressed'::breach_dispatch_status ELSE 'pending'::breach_dispatch_status END,
+        $23
     )
     RETURNING breach_id
 """
@@ -40,6 +43,7 @@ MARK_BREACH_DISPATCHED = """
     UPDATE threshold_breach_log
     SET dispatch_status = 'dispatched',
         dispatched_at = now(),
+        main_system_alert_id = $2,
         dispatch_attempt_count = dispatch_attempt_count + 1
     WHERE breach_id = $1
 """
@@ -59,6 +63,16 @@ FIND_RECENT_BREACH = """
       AND detected_at >= $2
       AND is_duplicate = FALSE
       AND ($3::uuid IS NULL OR weather_location_id = $3 OR gauge_id = $3)
+    ORDER BY detected_at DESC
+    LIMIT 1
+"""
+
+FIND_RECENT_SEISMIC_BREACH = """
+    SELECT breach_id
+    FROM threshold_breach_log
+    WHERE seismic_event_id = $1
+      AND breach_severity = $2::breach_level
+      AND is_duplicate = FALSE
     ORDER BY detected_at DESC
     LIMIT 1
 """

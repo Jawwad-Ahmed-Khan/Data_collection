@@ -117,10 +117,107 @@ async def lifespan(app: FastAPI):
 
     # Step 3: Connect to database
     global _db_pool
-    _db_pool = DatabasePool(settings)
-    await _db_pool.connect()
-    logger.info("✓ Step 3/7: Database connected (pool_size=%d-%d)", 
-                settings.collection_db_pool_min, settings.collection_db_pool_max)
+    try:
+        _db_pool = DatabasePool(settings)
+        await _db_pool.connect()
+        logger.info("✓ Step 3/7: Database connected (pool_size=%d-%d)", 
+                    settings.collection_db_pool_min, settings.collection_db_pool_max)
+    except Exception as e:
+        logger.critical("CRITICAL: Failed to connect to database at startup: %s", str(e))
+        import sys
+        sys.exit(1)
+
+    # Step 3.5: Seed database
+    logger.info("Checking and seeding reference data...")
+    try:
+        # Clean up any cycles left 'running' from a previous crash
+        fixed = await _db_pool.execute("""
+            UPDATE collection_cycles
+            SET
+                status         = 'failed',
+                completed_at   = now(),
+                failure_reason = 'Service restarted — cycle was interrupted'
+            WHERE status = 'running'
+              AND api_name = 'open_meteo'
+              AND started_at < now() - INTERVAL '30 minutes'
+        """)
+        if fixed != 'UPDATE 0':
+            logger.warning("Fixed stale running cycles: %s", fixed)
+
+        # Seed APIs
+        await _db_pool.execute("""
+            INSERT INTO api_registry (
+                api_name, display_name, base_url, documentation_url,
+                max_requests_per_minute, min_delay_between_calls_ms,
+                initial_backoff_s, max_backoff_s, backoff_multiplier
+            )
+            VALUES 
+                ('usgs', 'USGS Earthquake API', 'https://earthquake.usgs.gov/fdsnws/event/1/query', 'https://earthquake.usgs.gov/fdsnws/event/1/', NULL, NULL, NULL, NULL, NULL),
+                ('open_meteo', 'Open-Meteo Weather API', 'https://api.open-meteo.com/v1/forecast', 'https://open-meteo.com/en/docs', 10, 500, 10, 600, 2.0),
+                ('google_flood_hub', 'Google Flood Hub API', 'https://floodforecasting.googleapis.com/v1', 'https://developers.google.com/earth-engine/guides/flood_hub', NULL, NULL, NULL, NULL, NULL)
+            ON CONFLICT DO NOTHING
+        """)
+        logger.info("api_registry seeded/verified")
+        
+        # Seed Disaster Thresholds
+        await _db_pool.execute("""
+            INSERT INTO disaster_thresholds (
+                disaster_kind, metric_name, breach_direction, unit, 
+                watch_threshold, warning_threshold, emergency_threshold, extreme_threshold,
+                province, applies_season, is_active
+            ) VALUES 
+                ('earthquake', 'magnitude', 'above', 'richter', 4.0, 5.0, 6.0, 7.0, NULL, NULL, TRUE),
+                ('heatwave', 'temp_max_c', 'above', 'celsius', 40.0, 42.0, 45.0, 48.0, NULL, 'summer', TRUE),
+                ('heatwave', 'temp_max_c', 'above', 'celsius', 42.0, 45.0, 48.0, 50.0, 'sindh', 'summer', TRUE),
+                ('heavy_rain', 'precip_1h_mm', 'above', 'mm', 20.0, 30.0, 40.0, 50.0, NULL, NULL, TRUE),
+                ('heavy_rain', 'precip_24h_mm', 'above', 'mm', 50.0, 75.0, 100.0, 150.0, NULL, NULL, TRUE),
+                ('cyclone', 'wind_gusts_kmh', 'above', 'kmh', 65.0, 90.0, 120.0, 160.0, NULL, NULL, TRUE),
+                ('cyclone', 'cape_jkg', 'above', 'j/kg', 1000.0, 2000.0, 3000.0, 4000.0, NULL, NULL, TRUE),
+                ('cold_wave', 'temp_min_c', 'below', 'celsius', 5.0, 2.0, -2.0, -5.0, NULL, 'winter', TRUE),
+                ('cold_wave', 'temp_min_c', 'below', 'celsius', -2.0, -5.0, -10.0, -15.0, 'gilgit_baltistan', 'winter', TRUE)
+            ON CONFLICT DO NOTHING
+        """)
+
+        # Seed Locations
+        loc_count_row = await _db_pool.fetch_one("SELECT count(*) as cnt FROM pakistan_locations WHERE is_active = TRUE")
+        if loc_count_row and loc_count_row["cnt"] < 15:
+            locations = [
+                ("lahore_31.5497_74.3436", "Lahore", "لاہور", "tier_1_provincial_capital", "Lahore", "Lahore", "punjab", 31.5497, 74.3436, "II", 11126285, "zone_1_low", "zone_3_high", "moderate", "critical", 180),
+                ("karachi_24.8607_67.0011", "Karachi", "کراچی", "tier_1_provincial_capital", "Karachi", "Karachi", "sindh", 24.8607, 67.0011, "III", 16051521, "zone_2_moderate", "zone_5_critical", "low", "critical", 180),
+                ("islamabad_33.6844_73.0479", "Islamabad", "اسلام آباد", "tier_1_provincial_capital", "Islamabad", "Islamabad", "islamabad_capital_territory", 33.6844, 73.0479, "III", 1014825, "zone_1_low", "zone_2_moderate", "moderate", "critical", 180),
+                ("peshawar_34.0150_71.5249", "Peshawar", "پشاور", "tier_1_provincial_capital", "Peshawar", "Peshawar", "khyber_pakhtunkhwa", 34.0150, 71.5249, "IV", 1970042, "zone_2_moderate", "zone_2_moderate", "moderate", "critical", 180),
+                ("quetta_30.1798_66.9750", "Quetta", "کوئٹہ", "tier_1_provincial_capital", "Quetta", "Quetta", "balochistan", 30.1798, 66.9750, "IV", 1001205, "zone_1_low", "zone_3_high", "low", "critical", 180),
+                ("multan_30.1575_71.5249", "Multan", "ملتان", "tier_2_district_headquarters", "Multan", "Multan", "punjab", 30.1575, 71.5249, "II", 1871843, "zone_1_low", "zone_4_very_high", "moderate", "high", 240),
+                ("faisalabad_31.4504_73.1350", "Faisalabad", "فیصل آباد", "tier_2_district_headquarters", "Faisalabad", "Faisalabad", "punjab", 31.4504, 73.1350, "II", 3203846, "zone_1_low", "zone_3_high", "moderate", "high", 240),
+                ("hyderabad_25.3960_68.3578", "Hyderabad", "حیدرآباد", "tier_2_district_headquarters", "Hyderabad", "Hyderabad", "sindh", 25.3960, 68.3578, "II", 1734302, "zone_2_moderate", "zone_4_very_high", "low", "high", 240),
+                ("sukkur_27.7135_68.8524", "Sukkur", "سکھر", "tier_2_district_headquarters", "Sukkur", "Sukkur", "sindh", 27.7135, 68.8524, "II", 499900, "zone_5_critical", "zone_4_very_high", "low", "high", 240),
+                ("gilgit_35.9208_74.3083", "Gilgit", "گلگت", "tier_2_district_headquarters", "Gilgit", "Gilgit", "gilgit_baltistan", 35.9208, 74.3083, "IV", 216760, "zone_2_moderate", "zone_1_low", "moderate", "high", 240),
+                ("muzaffarabad_34.3596_73.4715", "Muzaffarabad", "مظفرآباد", "tier_2_district_headquarters", "Muzaffarabad", "Muzaffarabad", "azad_kashmir", 34.3596, 73.4715, "IV", 149000, "zone_2_moderate", "zone_1_low", "moderate", "high", 240),
+                ("abbottabad_34.1463_73.2117", "Abbottabad", "ایبٹ آباد", "tier_2_district_headquarters", "Abbottabad", "Abbottabad", "khyber_pakhtunkhwa", 34.1463, 73.2117, "IV", 208491, "zone_2_moderate", "zone_1_low", "moderate", "high", 240),
+                ("larkana_27.5589_68.2120", "Larkana", "لاڑکانہ", "tier_3_disaster_zone", "Larkana", "Larkana", "sindh", 27.5589, 68.2120, "II", 490508, "zone_5_critical", "zone_4_very_high", "low", "medium", 360),
+                ("dera_ghazi_khan_30.0489_70.6455", "Dera Ghazi Khan", "ڈیرہ غازی خان", "tier_3_disaster_zone", "Dera Ghazi Khan", "Dera Ghazi Khan", "punjab", 30.0489, 70.6455, "III", 399064, "zone_5_critical", "zone_4_very_high", "low", "medium", 360),
+                ("chaman_30.9236_66.4512", "Chaman", "چمن", "tier_3_disaster_zone", "Chaman", "Chaman", "balochistan", 30.9236, 66.4512, "IV", 123190, "zone_1_low", "zone_2_moderate", "low", "medium", 360),
+            ]
+            for loc in locations:
+                await _db_pool.execute("""
+                    INSERT INTO pakistan_locations (
+                        location_key, location_name, local_name, location_tier, 
+                        district, division, province, latitude, longitude,
+                        seismic_zone, population, flood_risk_zone, heat_risk_zone,
+                        infrastructure_quality, poll_priority, poll_interval_minutes,
+                        next_poll_due_at, coordinates, is_active
+                    ) VALUES (
+                        $1, $2, $3, $4::location_tier, 
+                        $5, $6, $7::pk_province, $8::numeric, $9::numeric, 
+                        $10, $11, $12::risk_zone, $13::risk_zone, 
+                        $14::vulnerability_level, $15::poll_priority, $16,
+                        now(), ST_SetSRID(ST_MakePoint($9::float8, $8::float8), 4326), TRUE
+                    )
+                    ON CONFLICT DO NOTHING
+                """, *loc)
+            logger.info("Seeded 15 prototype locations.")
+    except Exception as e:
+        logger.error("Failed during seeding: %s", str(e))
 
     # Step 4: Load reference data into InMemoryCache
     reference_repo = ReferenceRepository(_db_pool)
@@ -166,8 +263,9 @@ async def lifespan(app: FastAPI):
     
     # Create shared HTTP client
     _http_client = httpx.AsyncClient(
-        timeout=httpx.Timeout(30.0),
+        timeout=httpx.Timeout(connect=10.0, read=30.0, write=30.0, pool=30.0),
         limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+        headers={"User-Agent": "ClimaSync-Data-Collection-Service/1.0"},
     )
     
     # Create repositories
@@ -245,6 +343,11 @@ async def lifespan(app: FastAPI):
     global _scheduler
     _scheduler = JobScheduler()
     
+    app.state.scheduler = _scheduler
+    app.state.openmeteo_collector = _openmeteo_collector
+    app.state.usgs_collector = _usgs_collector
+    app.state.floodhub_collector = _floodhub_collector
+    
     # Define cache reload function
     async def reload_cache():
         """Reload reference data from database."""
@@ -303,12 +406,18 @@ async def lifespan(app: FastAPI):
     )
     
     # Start scheduler
-    _scheduler.start()
+    try:
+        _scheduler.start()
+    except Exception as e:
+        logger.critical("CRITICAL: Failed to start scheduler: %s", str(e))
+        import sys
+        sys.exit(1)
     
     logger.info("✓ Step 6/7: Scheduler started with 7 jobs:")
 
     # Step 7: Set database pool for API routes
     health_controller.set_database_pool(_db_pool)
+    health_controller.set_scheduler(_scheduler)
     status_controller.set_database_pool(_db_pool)
     
     logger.info("✓ Step 7/7: Startup complete!")

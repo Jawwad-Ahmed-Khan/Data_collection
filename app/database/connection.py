@@ -43,6 +43,8 @@ class DatabasePool:
         - Decimal: PostgreSQL numeric type (no precision loss)
         - ENUM types: magnitude_class, depth_class, breach_level, etc.
         """
+        await conn.execute("SET TIME ZONE 'UTC'")
+        
         # Register Decimal codec for numeric/decimal columns
         await conn.set_type_codec(
             'numeric',
@@ -163,13 +165,15 @@ class DatabasePool:
             A dict of column_name -> value, or None.
         """
         try:
-            async with self.pool.acquire() as conn:
-                row = await conn.fetchrow(query, *args)
+            async with self.pool.acquire(timeout=30.0) as conn:
+                row = await conn.fetchrow(query, *args, timeout=30.0)
                 return dict(row) if row is not None else None
         except asyncpg.PostgresError as exc:
             raise DatabaseError(f"fetch_one failed: {exc}", query=query, original_error=exc) from exc
         except (OSError, ConnectionError) as exc:
             raise DatabaseError(f"fetch_one connection lost: {exc}", query=query, original_error=exc) from exc
+        except Exception as exc:
+            raise DatabaseError(f"fetch_one error: {exc}", query=query, original_error=exc) from exc
 
     async def fetch_many(self, query: str, *args: object) -> list[dict]:
         """Fetch multiple rows as a list of dicts.
@@ -182,13 +186,15 @@ class DatabasePool:
             A list of dicts (empty list if no rows match).
         """
         try:
-            async with self.pool.acquire() as conn:
-                rows = await conn.fetch(query, *args)
+            async with self.pool.acquire(timeout=30.0) as conn:
+                rows = await conn.fetch(query, *args, timeout=30.0)
                 return [dict(r) for r in rows]
         except asyncpg.PostgresError as exc:
             raise DatabaseError(f"fetch_many failed: {exc}", query=query, original_error=exc) from exc
         except (OSError, ConnectionError) as exc:
             raise DatabaseError(f"fetch_many connection lost: {exc}", query=query, original_error=exc) from exc
+        except Exception as exc:
+            raise DatabaseError(f"fetch_many error: {exc}", query=query, original_error=exc) from exc
 
     async def execute(self, query: str, *args: object) -> str:
         """Execute a single SQL statement and return the status string.
@@ -201,12 +207,14 @@ class DatabasePool:
             Status string from asyncpg (e.g., "INSERT 0 1", "UPDATE 3").
         """
         try:
-            async with self.pool.acquire() as conn:
-                return await conn.execute(query, *args)
+            async with self.pool.acquire(timeout=30.0) as conn:
+                return await conn.execute(query, *args, timeout=30.0)
         except asyncpg.PostgresError as exc:
             raise DatabaseError(f"execute failed: {exc}", query=query, original_error=exc) from exc
         except (OSError, ConnectionError) as exc:
             raise DatabaseError(f"execute connection lost: {exc}", query=query, original_error=exc) from exc
+        except Exception as exc:
+            raise DatabaseError(f"execute error: {exc}", query=query, original_error=exc) from exc
 
     async def execute_many(self, query: str, args_list: list[tuple]) -> None:
         """Execute the same SQL statement with multiple argument sets.
@@ -220,8 +228,8 @@ class DatabasePool:
         if not args_list:
             return
         try:
-            async with self.pool.acquire() as conn:
-                await conn.executemany(query, args_list)
+            async with self.pool.acquire(timeout=30.0) as conn:
+                await conn.executemany(query, args_list, timeout=120.0)
         except asyncpg.PostgresError as exc:
             raise DatabaseError(
                 f"execute_many failed: {exc}", query=query, original_error=exc
@@ -229,4 +237,8 @@ class DatabasePool:
         except (OSError, ConnectionError) as exc:
             raise DatabaseError(
                 f"execute_many connection lost: {exc}", query=query, original_error=exc
+            ) from exc
+        except Exception as exc:
+            raise DatabaseError(
+                f"execute_many error: {exc}", query=query, original_error=exc
             ) from exc

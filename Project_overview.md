@@ -663,10 +663,10 @@ T+24:00 Final authoritative record established
 Your system uses UPSERT on usgs_event_id. The same event arrives multiple times with evolving data. Each UPSERT overwrites the row with the latest USGS values. The track_magnitude_revision trigger records the first revision.
 
 ### Polling Frequency
-Every 60 seconds. This gives earthquake-to-system detection time of 3 to 7 minutes total (USGS processing 2-5 minutes plus your polling interval up to 60 seconds).
+Every 5 minutes. This gives earthquake-to-system detection time of 7 to 10 minutes total (USGS processing 2-5 minutes plus your polling interval up to 5 minutes).
 
 ### Rate Limits
-USGS is very generous — approximately 60 requests per minute. With one call per 60 seconds you will never hit limits.
+USGS is very generous — approximately 60 requests per minute. With one call per 5 minutes you will never hit limits.
 
 ---
 
@@ -792,9 +792,9 @@ DELAY BETWEEN CALLS:
 
 FREQUENCY:
   Poll every 3-6 hours per location
-  Scheduler runs check every 15 minutes
+  Scheduler runs check every 2 hours
   Each location's next_poll_due_at controls when it is polled
-  Not all 15 polled every 15 minutes — only those due
+  Not all 15 polled every 2 hours — only those due
 
 PRIORITY ORDER:
   critical locations polled first (provincial capitals)
@@ -1219,14 +1219,14 @@ The APScheduler runs all data collection and maintenance jobs:
 ├────────────────────────┬──────────────┬───────────────────────   │
 │  JOB NAME              │  INTERVAL    │  WHAT IT DOES           │
 ├────────────────────────┼──────────────┼───────────────────────   │
-│  usgs_collection       │  60 seconds  │  Polls USGS for new     │
+│  usgs_collection       │  5 minutes   │  Polls USGS for new     │
 │                        │              │  Pakistan earthquakes    │
 ├────────────────────────┼──────────────┼───────────────────────   │
-│  weather_collection    │  15 minutes  │  Checks which locations │
+│  weather_collection    │  2 hours     │  Checks which locations │
 │                        │  (check)     │  are due for polling    │
 │                        │  3-6h (poll) │  Polls those that are   │
 ├────────────────────────┼──────────────┼───────────────────────   │
-│  flood_current         │  30 minutes  │  Gets current river     │
+│  flood_current         │  1 hour      │  Gets current river     │
 │                        │              │  gauge readings         │
 ├────────────────────────┼──────────────┼───────────────────────   │
 │  flood_forecasts       │  6 hours     │  Gets 5-day flood       │
@@ -1250,7 +1250,7 @@ All jobs follow these safety rules:
 
 max_instances = 1
   A job cannot run concurrently with itself
-  If USGS poll takes 70 seconds, the next 60-second
+  If USGS poll takes 70 seconds, the next 5-minute
   trigger fires but is dropped, not queued
 
 coalesce = True
@@ -1682,7 +1682,7 @@ T+0:00  Earthquake M6.2 occurs near Muzaffarabad
 
 T+2:30  USGS detects and publishes to their feed
 
-T+3:00  (at most) Our USGS collector runs (60s interval)
+T+3:00  (at most) Our USGS collector runs (5m interval)
          Calls USGS API with Pakistan bounding box
          New feature found in GeoJSON response
          Parse: magnitude=6.2, depth=12km (shallow), place="Muzaffarabad area"
@@ -1822,11 +1822,11 @@ Both breaches dispatched to main system:
 │  USGS_BASE_URL                   │  USGS API endpoint            │
 │  USGS_MIN_MAGNITUDE              │  2.5 (minimum to capture)     │
 │  USGS_LOOKBACK_HOURS             │  6 (overlap for updates)      │
-│  USGS_POLL_INTERVAL_SECONDS      │  60 (every minute)            │
+│  USGS_POLL_INTERVAL_SECONDS      │  300 (every 5 minutes)        │
 ├──────────────────────────────────┼───────────────────────────────┤
 │  OPEN-METEO SETTINGS             │                               │
 │  OPENMETEO_BASE_URL              │  Open-Meteo API endpoint      │
-│  OPENMETEO_POLL_INTERVAL_MINUTES │  15 (scheduler check)         │
+│  OPENMETEO_POLL_INTERVAL_MINUTES │  120 (scheduler check)        │
 │  OPENMETEO_REQUEST_DELAY_MS      │  500 (between locations)      │
 ├──────────────────────────────────┼───────────────────────────────┤
 │  GOOGLE FLOOD HUB SETTINGS       │                               │
@@ -1840,7 +1840,7 @@ Both breaches dispatched to main system:
 │  PAKISTAN_MAX_LON                │  78.0                         │
 ├──────────────────────────────────┼───────────────────────────────┤
 │  SCHEDULER INTERVALS             │                               │
-│  FLOOD_CURRENT_INTERVAL_MINUTES  │  30                           │
+│  FLOOD_CURRENT_INTERVAL_MINUTES  │  60                           │
 │  FLOOD_FORECAST_INTERVAL_HOURS   │  6                            │
 │  BREACH_DISPATCH_INTERVAL_SECS   │  30                           │
 │  THRESHOLD_RELOAD_INTERVAL_HRS   │  1                            │
@@ -1957,7 +1957,7 @@ The Data Collection Service is complete and working when:
 
 ```
 ✅ Service starts without errors and health endpoint returns healthy
-✅ USGS collector runs every 60 seconds
+✅ USGS collector runs every 5 minutes
    → seismic_events table has Pakistan earthquake data
    → magnitude_class and depth_class set by triggers
    → Running twice does not duplicate rows

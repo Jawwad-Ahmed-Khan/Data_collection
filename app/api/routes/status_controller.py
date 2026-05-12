@@ -61,6 +61,7 @@ class CycleDetail(BaseModel):
     locations_targeted: int
     locations_success: int
     locations_failed: int
+    rows_inserted: int
     rows_upserted: int
     breaches_triggered: int
     rate_limit_hits: int
@@ -78,7 +79,7 @@ class CyclesResponse(BaseModel):
 class BreachSummary(BaseModel):
     """Summary of breach counts by status."""
     pending_count: int
-    dispatched_count: int
+    dispatched_today: int
     failed_count: int
     last_breach_at: datetime | None
 
@@ -163,6 +164,7 @@ async def get_cycles(
                 locations_targeted,
                 locations_success,
                 locations_failed,
+                rows_inserted,
                 rows_upserted,
                 breaches_triggered,
                 rate_limit_hits,
@@ -180,6 +182,7 @@ async def get_cycles(
             locations_targeted,
             locations_success,
             locations_failed,
+            rows_inserted,
             rows_upserted,
             breaches_triggered,
             rate_limit_hits,
@@ -201,6 +204,7 @@ async def get_cycles(
             locations_targeted=cycle["locations_targeted"],
             locations_success=cycle["locations_success"],
             locations_failed=cycle["locations_failed"],
+            rows_inserted=cycle["rows_inserted"],
             rows_upserted=cycle["rows_upserted"],
             breaches_triggered=cycle["breaches_triggered"],
             rate_limit_hits=cycle["rate_limit_hits"],
@@ -241,17 +245,16 @@ async def get_breaches(
         """
         SELECT
             COUNT(*) FILTER (WHERE dispatch_status = 'pending') as pending_count,
-            COUNT(*) FILTER (WHERE dispatch_status = 'dispatched') as dispatched_count,
+            COUNT(*) FILTER (WHERE dispatch_status = 'dispatched' AND DATE(dispatched_at AT TIME ZONE 'Asia/Karachi') = CURRENT_DATE) as dispatched_today,
             COUNT(*) FILTER (WHERE dispatch_status = 'dispatch_failed') as failed_count,
             MAX(detected_at) as last_breach_at
         FROM threshold_breach_log
-        WHERE detected_at >= now() - interval '24 hours'
         """
     )
     
     summary = BreachSummary(
         pending_count=breach_stats["pending_count"] if breach_stats else 0,
-        dispatched_count=breach_stats["dispatched_count"] if breach_stats else 0,
+        dispatched_today=breach_stats["dispatched_today"] if breach_stats else 0,
         failed_count=breach_stats["failed_count"] if breach_stats else 0,
         last_breach_at=breach_stats.get("last_breach_at") if breach_stats else None,
     )

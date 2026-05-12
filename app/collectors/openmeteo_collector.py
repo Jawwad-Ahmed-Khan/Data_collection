@@ -80,38 +80,16 @@ class OpenMeteoCollector(BaseCollector):
 
     # ── Location Filtering ────────────────────────────────────────
 
-    def get_due_locations(self) -> list[PakistanLocation]:
+    async def get_due_locations(self) -> list[PakistanLocation]:
         """Get locations that are due for polling.
         
-        Filters locations where next_poll_due_at <= now() or is None.
-        Sorts by poll_priority (critical first).
+        Fetches directly from the database to ensure we have the most
+        up-to-date next_poll_due_at timestamps.
         
         Returns:
             List of locations due for polling, sorted by priority.
         """
-        now = datetime.now(_PKT)
-        due_locations = []
-        
-        for location in self.pakistan_locations:
-            # Skip inactive locations
-            if not location.is_active:
-                continue
-            
-            # Check if location is due for polling
-            # Poll if: next_poll_due_at is None OR next_poll_due_at <= now
-            if location.next_poll_due_at is None or location.next_poll_due_at <= now:
-                due_locations.append(location)
-        
-        # Sort by poll_priority (critical > high > medium > low)
-        priority_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
-        
-        # Use poll_priority if available, otherwise default to medium (2)
-        due_locations.sort(
-            key=lambda loc: priority_order.get(
-                getattr(loc, 'poll_priority', 'medium'), 
-                2
-            )
-        )
+        due_locations = await self.reference_repo.get_due_locations()
         
         logger.info(
             "Found %d locations due for polling (out of %d total active)",
@@ -149,6 +127,7 @@ class OpenMeteoCollector(BaseCollector):
             "total_hourly": 0,
             "total_daily": 0,
             "total_breaches": 0,
+            "latency_ms": 0.0,
             "errors": {},
         }
         
@@ -163,11 +142,22 @@ class OpenMeteoCollector(BaseCollector):
                 url=settings.openmeteo_base_url,
                 params=batch_params,
             )
+            stats["latency_ms"] = (datetime.now(_PKT) - poll_start_time).total_seconds() * 1000
             batch_data = response.json()
+            
+            # Check for API-level errors even if HTTP status was 200
+            if isinstance(batch_data, dict) and batch_data.get("error"):
+                raise ApiResponseError(
+                    self.api_name,
+                    response.status_code,
+                    f"Open-Meteo API Error: {batch_data.get('reason', 'Unknown error')}"
+                )
             
             # Parse and process each location's data
             for i, location in enumerate(locations):
                 try:
+                    logger.info("Polling %s [%s] (priority=%s)", location.location_name, location.location_key, location.poll_priority)
+                    
                     # Extract this location's data from batch response
                     location_data = self._extract_location_data(batch_data, i)
                     
@@ -179,6 +169,13 @@ class OpenMeteoCollector(BaseCollector):
                     daily_summaries = self.openmeteo_service.parse_daily(
                         location_data, 
                         location
+                    )
+                    
+                    logger.debug(
+                        "Open-Meteo response: %d hourly, %d daily [latency=%dms]",
+                        len(hourly_records),
+                        len(daily_summaries),
+                        latency_ms
                     )
                     
                     # Compute data freshness
@@ -207,17 +204,16 @@ class OpenMeteoCollector(BaseCollector):
                     stats["total_daily"] += process_stats["daily_upserted"]
                     stats["total_breaches"] += process_stats["breaches_detected"]
                     
-                    logger.debug(
-                        "Processed %s: %d hourly, %d daily, %d breaches",
+                    logger.info(
+                        "Wrote %d weather rows for %s [breaches=%d]",
+                        process_stats["hourly_upserted"] + process_stats["daily_upserted"],
                         location.location_name,
-                        process_stats["hourly_upserted"],
-                        process_stats["daily_upserted"],
                         process_stats["breaches_detected"],
                     )
                     
                 except Exception as e:
-                    logger.error(
-                        "Failed to process location %s in batch: %s",
+                    logger.warning(
+                        "Weather poll failed for %s: %s",
                         location.location_name,
                         str(e)
                     )
@@ -353,9 +349,10 @@ class OpenMeteoCollector(BaseCollector):
         api_config = await self._load_api_config()
         
         # Start cycle tracking
-        cycle_id = await self.cycle_repo.start_cycle(str(api_config.api_id), self.api_name)
+        cycle_start_time = datetime.now(_PKT)
+        cycle_id = await self.cycle_repo.start_cycle(str(api_config.api_id), self.api_name, cycle_type="scheduled")
         
-        logger.info("Starting Open-Meteo collection cycle: %s", cycle_id)
+        logger.info("Weather collection cycle starting [cycle_id=%s]", cycle_id)
         
         # Reset counters
         self.reset_counters()
@@ -365,16 +362,31 @@ class OpenMeteoCollector(BaseCollector):
         total_daily = 0
         total_breaches = 0
         error_message = None
+        error_summary = {}
+        total_latency = 0.0
+        api_calls_made = 0
         
         try:
+            # Check backoff BEFORE proceeding
+            if await self._check_backoff():
+                logger.warning("Open-Meteo API is in backoff. Skipping cycle.")
+                cycle_status = "skipped"
+                error_message = "API in backoff period"
+                return {
+                    "cycle_id": cycle_id,
+                    "status": "skipped",
+                    "error": "API in backoff period",
+                }
+            
             # Get locations due for polling (sorted by priority)
-            due_locations = self.get_due_locations()
+            due_locations = await self.get_due_locations()
             self.locations_targeted = len(due_locations)
             
             if not due_locations:
                 logger.info("No locations due for polling")
                 cycle_status = "skipped"
             else:
+                logger.info("%d locations due for polling", len(due_locations))
                 # Split locations into batches of 10
                 batches = [
                     due_locations[i:i + _BATCH_SIZE]
@@ -389,7 +401,13 @@ class OpenMeteoCollector(BaseCollector):
                 )
                 
                 # Process each batch
+                hit_backoff = False
                 for batch_num, batch in enumerate(batches, 1):
+                    if await self._check_backoff():
+                        logger.warning("Open-Meteo API entered backoff. Stopping remaining %d batches.", len(batches) - batch_num + 1)
+                        hit_backoff = True
+                        break
+                        
                     try:
                         logger.debug(
                             "Processing batch %d/%d with %d locations",
@@ -407,6 +425,10 @@ class OpenMeteoCollector(BaseCollector):
                         total_hourly += batch_stats["total_hourly"]
                         total_daily += batch_stats["total_daily"]
                         total_breaches += batch_stats["total_breaches"]
+                        error_summary.update(batch_stats["errors"])
+                        if batch_stats.get("latency_ms", 0) > 0:
+                            total_latency += batch_stats["latency_ms"]
+                            api_calls_made += 1
                         
                         # Rate limit delay between batches (500ms)
                         if batch_num < len(batches):
@@ -419,9 +441,11 @@ class OpenMeteoCollector(BaseCollector):
                         continue
                 
                 # Determine cycle status
-                if self.locations_failed > 0:
+                if self.locations_failed > 0 or hit_backoff:
                     if self.locations_success > 0:
                         cycle_status = "partial"
+                    elif hit_backoff:
+                        cycle_status = "skipped"
                     else:
                         cycle_status = "failed"
             
@@ -431,6 +455,8 @@ class OpenMeteoCollector(BaseCollector):
             error_message = str(e)
         
         finally:
+            avg_latency = total_latency / api_calls_made if api_calls_made > 0 else None
+            
             # Complete cycle tracking
             await self.cycle_repo.complete_cycle(
                 cycle_id=cycle_id,
@@ -442,19 +468,19 @@ class OpenMeteoCollector(BaseCollector):
                 rows_inserted=total_hourly + total_daily,
                 breaches_triggered=total_breaches,
                 rate_limit_hits=self.rate_limit_hits,
+                failure_reason=error_message,
+                error_summary=error_summary if error_summary else None,
+                avg_latency_ms=avg_latency,
             )
             
+            cycle_duration_ms = int((datetime.now(_PKT) - cycle_start_time).total_seconds() * 1000)
             logger.info(
-                "Open-Meteo cycle %s completed: status=%s, locations=%d/%d, "
-                "hourly=%d, daily=%d, breaches=%d, API_calls=%d",
-                cycle_id,
-                cycle_status,
+                "Weather cycle complete: %d/%d locations, %d rows, %d breaches [%dms]",
                 self.locations_success,
                 self.locations_targeted,
-                total_hourly,
-                total_daily,
+                total_hourly + total_daily,
                 total_breaches,
-                (self.locations_targeted + _BATCH_SIZE - 1) // _BATCH_SIZE,  # Ceiling division
+                cycle_duration_ms,
             )
         
         return {

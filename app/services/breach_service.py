@@ -36,6 +36,7 @@ _SUPPRESSION_WINDOWS = {
     "temperature": 180,   # 3 hours — heatwave persists
     "rainfall": 120,      # 2 hours — rain event developing
     "wind": 60,           # 1 hour — storm passing through
+    "cape": 60,           # 1 hour — severe storm building
     "flood_gauge": 60,    # 1 hour — river level updating
 }
 
@@ -68,6 +69,10 @@ class BreachService:
         """
         self._thresholds = thresholds
         self._breach_repo = breach_repository
+        
+        # O(1) Lookup cache: (metric_name, disaster_kind, province, district, season) -> DisasterThreshold
+        self._cache: dict[tuple[str, str, str | None, str | None, str | None], DisasterThreshold | None] = {}
+        
         logger.info("BreachService initialized with %d thresholds", len(thresholds))
 
     # ── Season Detection ──────────────────────────────────────────
@@ -81,15 +86,11 @@ class BreachService:
         now_pkt = datetime.now(_PKT)
         month = now_pkt.month
 
-        for season_name, (start_month, end_month) in _SEASONS.items():
-            if start_month <= end_month:
-                # Normal range (e.g., monsoon: 7-9)
-                if start_month <= month <= end_month:
-                    return season_name
-            else:
-                # Wraps year boundary (winter: 12-2)
-                if month >= start_month or month <= end_month:
-                    return season_name
+        if month in (7, 8, 9):      return 'monsoon'
+        if month in (4, 5, 6):      return 'pre_monsoon'
+        if month in (3,):           return 'summer'
+        if month in (10, 11):       return None  # post-monsoon
+        if month in (12, 1, 2):     return 'winter'
 
         return None
 
@@ -122,6 +123,10 @@ class BreachService:
             Most specific matching threshold, or None if no match found.
         """
         current_season = self._get_current_season()
+        cache_key = (metric_name, disaster_kind, province, district, current_season)
+        
+        if cache_key in self._cache:
+            return self._cache[cache_key]
 
         # Build candidate list in priority order
         candidates: list[tuple[int, DisasterThreshold]] = []
@@ -166,6 +171,7 @@ class BreachService:
                 "No threshold found for metric=%s, disaster=%s, province=%s, district=%s, season=%s",
                 metric_name, disaster_kind, province, district, current_season,
             )
+            self._cache[cache_key] = None
             return None
 
         # Return highest priority threshold
@@ -181,6 +187,7 @@ class BreachService:
             candidates[0][0],
         )
 
+        self._cache[cache_key] = selected
         return selected
 
     # ── Breach Level Detection ────────────────────────────────────
@@ -249,6 +256,8 @@ class BreachService:
         location_id: UUID | None,
         metric_name: str,
         metric_category: str,
+        seismic_event_id: UUID | None = None,
+        severity: str | None = None,
     ) -> UUID | None:
         """Check if a similar breach was recently created (duplicate suppression).
         
@@ -257,14 +266,29 @@ class BreachService:
             metric_name: Metric that breached (e.g., 'temp_max_c', 'magnitude').
             metric_category: Category for suppression window lookup
                             ('earthquake', 'temperature', 'rainfall', 'wind', 'flood_gauge').
+            seismic_event_id: Event ID for earthquakes.
+            severity: Severity level to check escalation for earthquakes.
         
         Returns:
             UUID of duplicate breach if found, None otherwise.
         """
+        # Earthquake events use severity-based deduplication
+        if metric_category == "earthquake":
+            if seismic_event_id and severity:
+                duplicate_breach_id = await self._breach_repo.find_recent_seismic_breach(
+                    seismic_event_id, severity
+                )
+                if duplicate_breach_id:
+                    logger.debug(
+                        "Duplicate seismic breach suppressed: event_id=%s, severity=%s",
+                        seismic_event_id, severity,
+                    )
+                return duplicate_breach_id
+            return None
+
         suppression_window_mins = _SUPPRESSION_WINDOWS.get(metric_category, 60)
 
-        # Earthquake events are never duplicates (each has unique usgs_event_id)
-        if metric_category == "earthquake" or suppression_window_mins == 0:
+        if suppression_window_mins == 0:
             return None
 
         # Query recent breaches for this location and metric
@@ -338,6 +362,8 @@ class BreachService:
             location_id=weather_location_id or gauge_id,
             metric_name=metric_name,
             metric_category=metric_category,
+            seismic_event_id=seismic_event_id,
+            severity=severity,
         )
 
         # Compute excess amount and percentage
@@ -374,6 +400,7 @@ class BreachService:
             breach=breach,
             is_duplicate=duplicate_of is not None,
             duplicate_of_breach_id=duplicate_of,
+            suppression_window_used_m=_SUPPRESSION_WINDOWS.get(metric_category, 60),
         )
 
         if duplicate_of:
@@ -382,10 +409,24 @@ class BreachService:
                 breach_id, duplicate_of,
             )
         else:
-            logger.info(
-                "Breach created: breach_id=%s, severity=%s, metric=%s, value=%.2f, threshold=%.2f",
-                breach_id, severity, metric_name, observed_value, threshold_value,
-            )
+            if source_api == "open_meteo":
+                logger.info(
+                    "Weather breach: %s %s=%.2f at %s (forecast=%s, horizon=%dh)",
+                    severity, metric_name, observed_value, location_name or "unknown",
+                    is_forecast_breach, forecast_horizon_h or 0
+                )
+            elif disaster_kind == "earthquake":
+                logger.info(
+                    "Breach detected: %s earthquake M%.1f near %s",
+                    severity,
+                    observed_value,
+                    location_name or "unknown",
+                )
+            else:
+                logger.info(
+                    "Breach created: breach_id=%s, severity=%s, metric=%s, value=%.2f, threshold=%.2f",
+                    breach_id, severity, metric_name, observed_value, threshold_value,
+                )
 
         return breach_id if not duplicate_of else None
 
@@ -408,6 +449,8 @@ class BreachService:
             return "rainfall"
         elif "wind" in metric_name:
             return "wind"
+        elif "cape" in metric_name:
+            return "cape"
         elif "gauge" in metric_name or "level" in metric_name or "pct_of" in metric_name:
             return "flood_gauge"
         else:

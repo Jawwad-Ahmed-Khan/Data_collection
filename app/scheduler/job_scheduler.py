@@ -4,9 +4,9 @@ ClimaSync Collection Service — Job Scheduler
 Manages all scheduled collection and maintenance jobs using APScheduler.
 
 All 7 required jobs:
-  1. USGS earthquake collection (every 60s)
-  2. Open-Meteo weather collection (every 15min)
-  3. Google Flood Hub current readings (every 30min)
+  1. USGS earthquake collection (every 5m)
+  2. Open-Meteo weather collection (every 2h)
+  3. Google Flood Hub current readings (every 1h)
   4. Google Flood Hub forecasts (every 6h)
   5. Breach dispatch to main system (every 30s)
   6. Threshold cache reload (every 1h)
@@ -22,7 +22,7 @@ Key features:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -191,7 +191,7 @@ class JobScheduler:
         self.cache_reload_func = cache_reload_func
         self.cleanup_func = cleanup_func
         
-        # Job 1: USGS earthquake collection (every 60s)
+        # Job 1: USGS earthquake collection (every 5m)
         if usgs_collector:
             self.scheduler.add_job(
                 self._run_usgs_collection,
@@ -199,10 +199,11 @@ class JobScheduler:
                 id="usgs_collection",
                 name="USGS Earthquake Collection",
                 replace_existing=True,
+                next_run_time=datetime.now(timezone.utc),
             )
             logger.info("✓ Job 1/7: USGS collection (every %ds)", settings.usgs_poll_interval_seconds)
         
-        # Job 2: Open-Meteo weather collection (every 15min)
+        # Job 2: Open-Meteo weather collection (every 2h)
         if openmeteo_collector:
             self.scheduler.add_job(
                 self._run_weather_collection,
@@ -210,10 +211,14 @@ class JobScheduler:
                 id="weather_collection",
                 name="Open-Meteo Weather Collection",
                 replace_existing=True,
+                max_instances=1,
+                coalesce=True,
+                misfire_grace_time=60,
+                next_run_time=datetime.now(timezone.utc),
             )
             logger.info("✓ Job 2/7: Weather collection (every %dmin)", settings.openmeteo_poll_interval_minutes)
         
-        # Job 3: Flood Hub current readings (every 30min)
+        # Job 3: Flood Hub current readings (every 1h)
         if floodhub_collector:
             self.scheduler.add_job(
                 self._run_flood_current,

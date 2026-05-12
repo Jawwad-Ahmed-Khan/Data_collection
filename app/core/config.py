@@ -53,16 +53,16 @@ class Settings(BaseSettings):
         default="https://earthquake.usgs.gov/fdsnws/event/1/query",
         description="USGS earthquake API endpoint",
     )
-    usgs_min_magnitude: float = Field(default=2.5, ge=0, le=10, description="Minimum earthquake magnitude to capture")
-    usgs_lookback_hours: int = Field(default=6, ge=1, le=1000, description="Hours of overlap for USGS updates")
-    usgs_poll_interval_seconds: int = Field(default=60, ge=10, description="Seconds between USGS polls")
+    usgs_min_magnitude: float = Field(default=2.5, ge=0.0, le=5.0, description="Minimum earthquake magnitude to capture")
+    usgs_lookback_hours: int = Field(default=6, ge=1, le=24, description="Hours of overlap for USGS updates")
+    usgs_poll_interval_seconds: int = Field(default=300, ge=60, description="Seconds between USGS polls")
 
     # ── Open-Meteo Weather API ──────────────────────────────────
     openmeteo_base_url: str = Field(
         default="https://api.open-meteo.com/v1/forecast",
         description="Open-Meteo weather API endpoint",
     )
-    openmeteo_poll_interval_minutes: int = Field(default=15, ge=1, description="Minutes between weather poll checks")
+    openmeteo_poll_interval_minutes: int = Field(default=120, ge=1, description="Minutes between weather poll checks")
     openmeteo_request_delay_ms: int = Field(default=500, ge=0, description="Delay between location requests (ms)")
 
     # ── Google Flood Hub API ────────────────────────────────────
@@ -70,7 +70,7 @@ class Settings(BaseSettings):
         default="https://floodforecasting.googleapis.com/v1",
         description="Google Flood Forecasting API endpoint",
     )
-    google_flood_hub_api_key: str = Field(..., description="Google Cloud API key for Flood Hub")
+    google_flood_hub_api_key: str = Field(default="", description="Google Cloud API key for Flood Hub")
 
     # ── Pakistan Geographic Bounds ──────────────────────────────
     pakistan_min_lat: float = Field(default=23.0, description="Pakistan southern latitude")
@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     pakistan_max_lon: float = Field(default=78.0, description="Pakistan eastern longitude")
 
     # ── Collection Intervals ────────────────────────────────────
-    flood_current_interval_minutes: int = Field(default=30, ge=1, description="Minutes between flood gauge current polls")
+    flood_current_interval_minutes: int = Field(default=60, ge=1, description="Minutes between flood gauge current polls")
     flood_forecast_interval_hours: int = Field(default=6, ge=1, description="Hours between flood forecast polls")
     breach_dispatch_interval_seconds: int = Field(default=30, ge=1, description="Seconds between breach dispatch attempts")
     threshold_reload_interval_hours: int = Field(default=1, ge=1, description="Hours between threshold cache reloads")
@@ -104,6 +104,13 @@ class Settings(BaseSettings):
     api_backoff_max_s: float = Field(default=600.0, ge=10, description="Maximum backoff seconds")
 
     # ── Validation ──────────────────────────────────────────────
+
+    @field_validator("collection_db_host", "collection_db_password", "main_system_api_key")
+    @classmethod
+    def must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ConfigurationError("Field cannot be empty")
+        return v
 
     @field_validator("main_system_base_url")
     @classmethod
