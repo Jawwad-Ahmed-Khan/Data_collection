@@ -97,6 +97,20 @@ class FloodRepository(BaseRepository):
             ) for f in forecasts
         ]
         
-        await self.db.executemany(UPSERT_FLOOD_FORECAST, args)
+        from app.core.logger import get_logger
+        logger = get_logger(__name__)
+        
+        try:
+            await self.db.execute_many(UPSERT_FLOOD_FORECAST, args)
+        except Exception as e:
+            logger.warning(f"Batch upsert failed for flood forecasts, falling back to row-by-row: {e}")
+            success_count = 0
+            for arg in args:
+                try:
+                    await self.db.execute(UPSERT_FLOOD_FORECAST, *arg)
+                    success_count += 1
+                except Exception as row_error:
+                    logger.error(f"Row upsert failed for forecast {arg[0]} at {arg[6]}: {row_error}")
+            logger.info(f"Row-by-row fallback completed. Upserted {success_count}/{len(args)} forecasts.")
 
 

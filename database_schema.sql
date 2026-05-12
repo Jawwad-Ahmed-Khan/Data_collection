@@ -2432,6 +2432,11 @@ SELECT
     tbl.last_dispatch_error,
     tbl.detected_at,
 
+    -- IDs
+    tbl.gauge_id,
+    tbl.weather_location_id,
+    tbl.seismic_event_id,
+
     -- Threshold detail
     dt.unit,
     dt.breach_direction,
@@ -2458,7 +2463,10 @@ SELECT
         'observation_time',    tbl.observation_time,
         'is_forecast',         tbl.is_forecast_breach,
         'forecast_horizon_h',  tbl.forecast_horizon_h,
-        'detected_at',         tbl.detected_at
+        'detected_at',         tbl.detected_at,
+        'gauge_id',            tbl.gauge_id,
+        'weather_location_id', tbl.weather_location_id,
+        'seismic_event_id',    tbl.seismic_event_id
     ) AS dispatch_payload
 
 FROM threshold_breach_log tbl

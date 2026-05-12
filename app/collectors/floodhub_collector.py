@@ -95,7 +95,7 @@ class FloodHubCollector(BaseCollector):
             )
 
             if response.status_code == 404:
-                logger.debug(f"Gauge {google_gauge_id} not found or no data (404).")
+                logger.debug("No data available for gauge %s (404)", google_gauge_id)
                 return None
             elif response.status_code == 403:
                 logger.critical("CRITICAL: Invalid API Key for Google Flood Hub (403).")
@@ -109,7 +109,7 @@ class FloodHubCollector(BaseCollector):
 
             data = response.json()
             if data.get('latestReading') is None:
-                logger.warning(f"Gauge {google_gauge_id} response missing latestReading.")
+                logger.debug("No data available for gauge %s (404)", google_gauge_id)
                 return None
 
             return data
@@ -146,7 +146,7 @@ class FloodHubCollector(BaseCollector):
             )
 
             if response.status_code == 404:
-                logger.debug(f"Forecast for {google_gauge_id} not found (404).")
+                logger.warning("No forecast data for %s", google_gauge_id)
                 return None
             elif response.status_code == 403:
                 logger.critical("CRITICAL: Invalid API Key for Google Flood Hub (403).")
@@ -161,7 +161,7 @@ class FloodHubCollector(BaseCollector):
             data = response.json()
             forecasts_list = data.get('forecasts')
             if forecasts_list is None or not isinstance(forecasts_list, list) or len(forecasts_list) == 0:
-                logger.debug(f"Forecast for {google_gauge_id} is empty.")
+                logger.warning("No forecast data for %s", google_gauge_id)
                 return None
 
             return data
@@ -202,6 +202,8 @@ class FloodHubCollector(BaseCollector):
         cycle_id = await self.cycle_repo.start_cycle(
             str(api_config.api_id), "google_flood_hub", "flood_current"
         )
+        logger.info("Flood current cycle starting [cycle_id=%s]", cycle_id)
+        logger.info("%d active flood gauges to process", len(self.flood_gauges))
 
         stats = {
             "locations_targeted": len(self.flood_gauges),
@@ -228,6 +230,7 @@ class FloodHubCollector(BaseCollector):
                     break
 
                 try:
+                    logger.debug("Fetching current reading for %s (%s)", gauge.gauge_name, gauge.google_gauge_id)
                     t0 = time.monotonic()
                     current_data = await self._fetch_current_reading(gauge.google_gauge_id)
                     stats["total_api_calls"] += 1
@@ -247,6 +250,7 @@ class FloodHubCollector(BaseCollector):
                     if current_obj:
                         res = await self.floodhub_service.process_current_reading(current_obj, gauge)
                         if res["success"]:
+                            logger.info("Wrote current reading for %s", gauge.google_gauge_id)
                             stats["locations_success"] += 1
                             stats["rows_upserted"] += 1
                             if res.get("breach_detected"):
@@ -267,7 +271,7 @@ class FloodHubCollector(BaseCollector):
                     rate_limited = True
                     break
                 except Exception as e:
-                    logger.error(f"Error processing gauge {gauge.google_gauge_id}: {e}")
+                    logger.error("Error processing gauge %s: %s", gauge.gauge_name, e, exc_info=True)
                     stats["locations_failed"] += 1
 
                 # 500ms delay between gauges
@@ -299,10 +303,15 @@ class FloodHubCollector(BaseCollector):
                 rate_limit_hits=1 if rate_limited else 0,
                 avg_latency_ms=avg_latency,
             )
+            logger.info(
+                "Flood current complete: %d/%d gauges, %d breaches [%dms]",
+                stats["locations_success"], stats["locations_targeted"],
+                stats["breaches_triggered"], int(stats["latency_sum_ms"])
+            )
             return stats
 
         except APIUnavailableError as e:
-            logger.critical(f"Flood Hub API Unavailable: {e}")
+            logger.critical("Google Flood Hub API key invalid. Flood collection disabled.")
             await self.cycle_repo.complete_cycle(
                 cycle_id=cycle_id,
                 status="failed",
@@ -352,6 +361,8 @@ class FloodHubCollector(BaseCollector):
         cycle_id = await self.cycle_repo.start_cycle(
             str(api_config.api_id), "google_flood_hub", "flood_forecast"
         )
+        logger.info("Flood forecast cycle starting [cycle_id=%s]", cycle_id)
+        logger.info("%d active flood gauges to process", len(self.flood_gauges))
 
         stats = {
             "locations_targeted": len(self.flood_gauges),
@@ -378,6 +389,7 @@ class FloodHubCollector(BaseCollector):
                     break
 
                 try:
+                    logger.debug("Fetching forecast for %s", gauge.gauge_name)
                     t0 = time.monotonic()
                     forecast_data = await self._fetch_forecast(gauge.google_gauge_id)
                     stats["total_api_calls"] += 1
@@ -413,7 +425,7 @@ class FloodHubCollector(BaseCollector):
                     rate_limited = True
                     break
                 except Exception as e:
-                    logger.error(f"Error processing forecast for gauge {gauge.google_gauge_id}: {e}")
+                    logger.error("Error processing gauge %s: %s", gauge.gauge_name, e, exc_info=True)
                     stats["locations_failed"] += 1
 
                 # 500ms delay between gauges
@@ -445,10 +457,16 @@ class FloodHubCollector(BaseCollector):
                 rate_limit_hits=1 if rate_limited else 0,
                 avg_latency_ms=avg_latency,
             )
+            logger.info(
+                "Flood forecast complete: %d/%d gauges, %d rows, %d breaches [%dms]",
+                stats["locations_success"], stats["locations_targeted"],
+                stats["rows_upserted"], stats["breaches_triggered"],
+                int(stats["latency_sum_ms"])
+            )
             return stats
 
         except APIUnavailableError as e:
-            logger.critical(f"Flood Hub API Unavailable: {e}")
+            logger.critical("Google Flood Hub API key invalid. Flood collection disabled.")
             await self.cycle_repo.complete_cycle(
                 cycle_id=cycle_id,
                 status="failed",

@@ -108,6 +108,14 @@ class DispatchService:
             "detected_at": detected_at_str,
         }
         
+        # Include location identifiers if present
+        if breach.get("gauge_id"):
+            payload["gauge_id"] = str(breach["gauge_id"])
+        if breach.get("weather_location_id"):
+            payload["weather_location_id"] = str(breach["weather_location_id"])
+        if breach.get("seismic_event_id"):
+            payload["seismic_event_id"] = str(breach["seismic_event_id"])
+        
         return payload
 
     def _get_metric_unit(self, metric_name: str) -> str:

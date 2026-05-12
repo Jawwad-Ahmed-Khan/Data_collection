@@ -135,9 +135,14 @@ class USGSService:
             logger.debug("Skipping deleted event [usgs_event_id=%s]", usgs_event_id)
             return None
         
-        magnitude = properties.get("mag")
-        if magnitude is None:
+        magnitude_raw = properties.get("mag")
+        if magnitude_raw is None:
             logger.debug("Skipping event with null magnitude [usgs_event_id=%s]", usgs_event_id)
+            return None
+            
+        magnitude = to_decimal(magnitude_raw)
+        if magnitude is None:
+            logger.debug("Skipping event with invalid magnitude [usgs_event_id=%s]", usgs_event_id)
             return None
         
         # Extract coordinates (GeoJSON format: [longitude, latitude, depth])
@@ -147,7 +152,8 @@ class USGSService:
         
         longitude = coordinates[0]
         latitude = coordinates[1]
-        depth_km = coordinates[2] if len(coordinates) >= 3 else None  # USGS provides depth in km
+        depth_raw = coordinates[2] if len(coordinates) >= 3 else None  # USGS provides depth in km
+        depth_km = to_decimal(depth_raw)
         
         # Validate coordinate bounds
         if not (23.0 <= latitude <= 38.0 and 60.0 <= longitude <= 78.0):
@@ -167,8 +173,8 @@ class USGSService:
         usgs_place = properties.get("place")
         usgs_event_url = properties.get("url")
         felt_reports = properties.get("felt")
-        cdi = properties.get("cdi")
-        mmi = properties.get("mmi")
+        cdi = to_decimal(properties.get("cdi"))
+        mmi = to_decimal(properties.get("mmi"))
         tsunami_flag = properties.get("tsunami", 0) == 1
         usgs_alert_level = properties.get("alert")
         significance = properties.get("sig")
@@ -510,6 +516,7 @@ class USGSService:
                     "DB write failed for event %s: %s",
                     event.usgs_event_id,
                     error_msg,
+                    exc_info=True,
                 )
                 stats["errors"] += 1
                 error_details[event.usgs_event_id] = error_msg

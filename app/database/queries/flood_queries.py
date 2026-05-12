@@ -100,6 +100,7 @@ UPSERT_FLOOD_FORECAST = """
 GET_ACTIVE_FLOOD_GAUGES = """
     SELECT *
     FROM flood_gauge_registry
+    WHERE is_active = TRUE
 """
 
 GET_PREVIOUS_READING = """

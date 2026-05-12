@@ -419,6 +419,11 @@ class BreachService:
                     severity, metric_name, observed_value, location_name or "unknown",
                     is_forecast_breach, forecast_horizon_h or 0
                 )
+            elif source_api == "google_flood_hub":
+                logger.info(
+                    "Flood breach: %s level at %s (%.1f%% of danger) [forecast=%s]",
+                    severity, location_name or "unknown", observed_value, is_forecast_breach
+                )
             elif disaster_kind == "earthquake":
                 logger.info(
                     "Breach detected: %s earthquake M%.1f near %s",

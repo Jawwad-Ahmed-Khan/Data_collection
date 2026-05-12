@@ -21,7 +21,7 @@ import httpx
 
 from app.collectors.base_collector import BaseCollector
 from app.core.config import get_settings
-from app.core.exceptions import ApiResponseError
+from app.core.exceptions import ApiResponseError, ApiRateLimitError
 from app.core.logger import get_logger
 from app.repositories.cycle_repository import CycleRepository
 from app.repositories.reference_repository import ReferenceRepository

@@ -153,6 +153,12 @@ class FloodHubService:
 
     async def process_current_reading(self, current: FloodGaugeCurrentBase, gauge: FloodGaugeRegistry) -> dict:
         try:
+            logger.info(
+                "Gauge %s: level=%.2fm, pct_danger=%.1f%%, trend=%s",
+                gauge.google_gauge_id, current.current_level_m,
+                current.pct_of_danger if current.pct_of_danger is not None else 0.0,
+                current.river_trend
+            )
             has_breach = False
             severity = None
             threshold_id = None
@@ -450,7 +456,7 @@ class FloodHubService:
                             step.threshold_id = threshold.threshold_id
 
             await self.flood_repo.upsert_forecast_batch(forecasts)
-            logger.info(f"Successfully upserted {len(forecasts)} forecast points")
+            logger.info("Wrote %d forecast steps for %s", len(forecasts), gauge.google_gauge_id)
             return {"success": True, "count": len(forecasts)}
         except Exception as e:
             logger.error(f"Failed to process forecasts: {e}")
