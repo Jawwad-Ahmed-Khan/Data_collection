@@ -155,7 +155,7 @@ async def lifespan(app: FastAPI):
                 initial_backoff_s, max_backoff_s, backoff_multiplier
             )
             VALUES 
-                ('usgs', 'USGS Earthquake API', 'https://earthquake.usgs.gov/fdsnws/event/1/query', 'https://earthquake.usgs.gov/fdsnws/event/1/', NULL, NULL, NULL, NULL, NULL),
+                ('usgs', 'USGS Earthquake API', 'https://earthquake.usgs.gov/fdsnws/event/1/query', 'https://earthquake.usgs.gov/fdsnws/event/1/', 60, 300, 5, 600, 2.0),
                 ('open_meteo', 'Open-Meteo Weather API', 'https://api.open-meteo.com/v1/forecast', 'https://open-meteo.com/en/docs', 10, 500, 10, 600, 2.0),
                 ('google_flood_hub', 'Google Flood Hub API', 'https://floodforecasting.googleapis.com/v1', 'https://developers.google.com/earth-engine/guides/flood_hub', 60, 500, 10, 600, 2.0)
             ON CONFLICT DO NOTHING
@@ -247,7 +247,7 @@ async def lifespan(app: FastAPI):
                     """,
                     gauge["google_gauge_id"], gauge.get("gauge_name", "Unnamed"), "Unnamed River",
                     f"POINT({gauge['lon']} {gauge['lat']})",
-                    gauge["lat"], gauge["lon"], "unknown", "Unknown", "normal",
+                    gauge["lat"], gauge["lon"], None, "Unknown", "high",
                     10.0, 12.0, 15.0, 20.0
                     )
                 logger.info("Seeded 9 active flood gauges.")
@@ -432,7 +432,7 @@ async def lifespan(app: FastAPI):
         # Delete weather daily older than 14 days
         cutoff_date = datetime.now(ZoneInfo("Asia/Karachi")).date() - timedelta(days=14)
         await _db_pool.execute(
-            "DELETE FROM weather_daily_summary WHERE summary_date < $1",
+            "DELETE FROM weather_daily_summaries WHERE summary_date < $1",
             cutoff_date
         )
         

@@ -175,7 +175,7 @@ class OpenMeteoCollector(BaseCollector):
                         "Open-Meteo response: %d hourly, %d daily [latency=%dms]",
                         len(hourly_records),
                         len(daily_summaries),
-                        latency_ms
+                        stats["latency_ms"]
                     )
                     
                     # Compute data freshness

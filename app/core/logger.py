@@ -10,6 +10,7 @@ Every log line includes:
 
 from __future__ import annotations
 
+import io
 import logging
 import sys
 from datetime import datetime
@@ -53,7 +54,10 @@ def setup_logger(
 
     logger.setLevel(getattr(logging, level.upper(), logging.INFO))
 
-    handler = logging.StreamHandler(sys.stdout)
+    # Use a UTF-8 stream wrapper so Unicode characters (e.g. checkmarks) work
+    # on Windows consoles that default to cp1252.
+    utf8_stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+    handler = logging.StreamHandler(utf8_stream)
     handler.setLevel(getattr(logging, level.upper(), logging.INFO))
 
     fmt = "%(asctime)s | %(levelname)-7s | %(name)s | %(funcName)-25s | %(message)s"

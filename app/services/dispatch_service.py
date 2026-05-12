@@ -75,8 +75,10 @@ class DispatchService:
         province = breach.get("province")
         latitude = breach.get("latitude")
         longitude = breach.get("longitude")
-        observed_value = breach["observed_value"]
-        threshold_value = breach["threshold_value"]
+        observed_value = float(breach["observed_value"]) if breach["observed_value"] is not None else None
+        threshold_value = float(breach["threshold_value"]) if breach["threshold_value"] is not None else None
+        latitude = float(latitude) if latitude is not None else None
+        longitude = float(longitude) if longitude is not None else None
         breach_severity = breach["breach_severity"]
         observation_time = breach["observation_time"]
         is_forecast = breach.get("is_forecast_breach", False)

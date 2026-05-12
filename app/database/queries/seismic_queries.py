@@ -16,7 +16,7 @@ UPSERT_SEISMIC_EVENT = """
         raw_api_response
     ) VALUES (
         $1, $2, $3, $4, $5, 
-        $6, ST_SetSRID(ST_MakePoint($8, $7), 4326), $7, $8, $9, 
+        $6, ST_SetSRID(ST_MakePoint($8::float8, $7::float8), 4326), $7::float8, $8::float8, $9, 
         $10, $11, $12, $13, 
         $14, $15, $16, $17, $18, 
         $19, $20, $21, $22, 

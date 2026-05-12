@@ -213,25 +213,25 @@ class BreachService:
 
         if direction == "above":
             # Value exceeding threshold triggers breach (heat, rain, flood)
-            if threshold.extreme_threshold is not None and value >= threshold.extreme_threshold:
-                levels_crossed.append(("extreme", threshold.extreme_threshold))
-            if threshold.emergency_threshold is not None and value >= threshold.emergency_threshold:
-                levels_crossed.append(("emergency", threshold.emergency_threshold))
-            if threshold.warning_threshold is not None and value >= threshold.warning_threshold:
-                levels_crossed.append(("warning", threshold.warning_threshold))
-            if threshold.watch_threshold is not None and value >= threshold.watch_threshold:
-                levels_crossed.append(("watch", threshold.watch_threshold))
+            if threshold.extreme_threshold is not None and value >= float(threshold.extreme_threshold):
+                levels_crossed.append(("extreme", float(threshold.extreme_threshold)))
+            if threshold.emergency_threshold is not None and value >= float(threshold.emergency_threshold):
+                levels_crossed.append(("emergency", float(threshold.emergency_threshold)))
+            if threshold.warning_threshold is not None and value >= float(threshold.warning_threshold):
+                levels_crossed.append(("warning", float(threshold.warning_threshold)))
+            if threshold.watch_threshold is not None and value >= float(threshold.watch_threshold):
+                levels_crossed.append(("watch", float(threshold.watch_threshold)))
 
         elif direction == "below":
             # Value dropping below threshold triggers breach (cold wave, drought)
-            if threshold.extreme_threshold is not None and value <= threshold.extreme_threshold:
-                levels_crossed.append(("extreme", threshold.extreme_threshold))
-            if threshold.emergency_threshold is not None and value <= threshold.emergency_threshold:
-                levels_crossed.append(("emergency", threshold.emergency_threshold))
-            if threshold.warning_threshold is not None and value <= threshold.warning_threshold:
-                levels_crossed.append(("warning", threshold.warning_threshold))
-            if threshold.watch_threshold is not None and value <= threshold.watch_threshold:
-                levels_crossed.append(("watch", threshold.watch_threshold))
+            if threshold.extreme_threshold is not None and value <= float(threshold.extreme_threshold):
+                levels_crossed.append(("extreme", float(threshold.extreme_threshold)))
+            if threshold.emergency_threshold is not None and value <= float(threshold.emergency_threshold):
+                levels_crossed.append(("emergency", float(threshold.emergency_threshold)))
+            if threshold.warning_threshold is not None and value <= float(threshold.warning_threshold):
+                levels_crossed.append(("warning", float(threshold.warning_threshold)))
+            if threshold.watch_threshold is not None and value <= float(threshold.watch_threshold):
+                levels_crossed.append(("watch", float(threshold.watch_threshold)))
 
         else:
             raise BreachDetectionError(
@@ -499,4 +499,4 @@ class BreachService:
                 f"Threshold {threshold.threshold_id} has no {severity} level defined"
             )
 
-        return value
+        return float(value)

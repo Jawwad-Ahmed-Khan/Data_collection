@@ -30,8 +30,8 @@ INSERT_BREACH_LOG = """
         dispatch_status,
         suppression_window_used_m
     ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
-        ST_SetSRID(ST_MakePoint($12, $11), 4326),
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::float8, $12::float8,
+        ST_SetSRID(ST_MakePoint($12::float8, $11::float8), 4326),
         $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
         CASE WHEN $21 = TRUE THEN 'suppressed'::breach_dispatch_status ELSE 'pending'::breach_dispatch_status END,
         $23

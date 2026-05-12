@@ -50,10 +50,10 @@ class WeatherRepository(BaseRepository):
         ]
         
         try:
-            await self.db.executemany(UPSERT_WEATHER_HOURLY, tuples)
+            await self.db.execute_many(UPSERT_WEATHER_HOURLY, tuples)
             return len(windows)
         except Exception as e:
-            logger.warning("executemany failed for hourly batch: %s. Falling back to individual inserts.", str(e))
+            logger.warning("execute_many failed for hourly batch: %s. Falling back to individual inserts.", str(e))
             success_count = 0
             for t in tuples:
                 try:
@@ -83,10 +83,10 @@ class WeatherRepository(BaseRepository):
         ]
         
         try:
-            await self.db.executemany(UPSERT_WEATHER_DAILY, tuples)
+            await self.db.execute_many(UPSERT_WEATHER_DAILY, tuples)
             return len(summaries)
         except Exception as e:
-            logger.warning("executemany failed for daily batch: %s. Falling back to individual inserts.", str(e))
+            logger.warning("execute_many failed for daily batch: %s. Falling back to individual inserts.", str(e))
             success_count = 0
             for t in tuples:
                 try:
@@ -97,51 +97,18 @@ class WeatherRepository(BaseRepository):
             return success_count
 
     async def upsert_current_weather(self, current: CurrentWeatherLocationBase) -> None:
-        """Upsert current weather for a location."""
-        await self.db.execute(
-            UPSERT_CURRENT_WEATHER_PER_LOCATION,
-            current.location_id,
+        """No-op: current_weather_per_location is a VIEW over weather_hourly_window.
+        The view is automatically up-to-date once hourly rows are upserted."""
+        logger.debug(
+            "upsert_current_weather skipped for %s — view is auto-populated from weather_hourly_window",
             current.location_key,
-            current.location_name,
-            current.temp_c,
-            current.temp_apparent_c,
-            current.precip_mm,
-            current.wind_speed_kmh,
-            current.humidity_pct,
-            current.pressure_hpa,
-            current.weather_condition,
-            current.weather_description,
-            current.is_daytime,
-            current.observation_time,
         )
 
     async def upsert_5day_forecast(self, summary: Weather5DaySummaryBase) -> None:
-        """Upsert 5-day forecast summary point."""
-        await self.db.execute(
-            UPSERT_WEATHER_5DAY_FORECAST,
-            summary.location_id,
+        """No-op: 5-day data is already stored via upsert_daily_batch to weather_daily_summaries.
+        The table weather_5day_forecast_per_location does not exist in the schema."""
+        logger.debug(
+            "upsert_5day_forecast skipped for %s %s — already stored in weather_daily_summaries",
             summary.location_key,
-            summary.location_name,
-            summary.district,
-            summary.province,
             summary.summary_date,
-            summary.day_offset,
-            summary.day_label,
-            summary.temp_max_c,
-            summary.temp_min_c,
-            summary.feels_like_max_c,
-            summary.precip_total_mm,
-            summary.precip_prob_max_pct,
-            summary.wind_speed_max_kmh,
-            summary.wind_gusts_max_kmh,
-            summary.uv_index_max,
-            summary.dominant_condition,
-            summary.sunrise_at,
-            summary.sunset_at,
-            summary.flag_extreme_heat_day,
-            summary.flag_heatwave_day,
-            summary.flag_heavy_rain_day,
-            summary.flag_storm_day,
-            summary.flag_cold_wave_day,
-            summary.worst_breach_severity,
         )

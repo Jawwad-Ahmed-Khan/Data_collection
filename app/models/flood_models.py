@@ -26,7 +26,7 @@ class FloodGaugeRegistryBase(BaseModel):
     warning_level_m: float | None = None
     danger_level_m: float | None = None
     extreme_level_m: float | None = None
-    poll_priority: Literal["critical", "high", "normal"] = "normal"
+    poll_priority: Literal["critical", "high", "medium", "low"] = "medium"
     is_active: bool = True
 
 

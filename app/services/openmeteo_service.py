@@ -674,7 +674,7 @@ class OpenMeteoService:
         now_utc = datetime.now(timezone.utc)
         is_forecast = record.forecast_for_datetime > now_utc
         horizon_s = (record.forecast_for_datetime - now_utc).total_seconds()
-        forecast_horizon_h = max(0, round(horizon_s / 3600))
+        forecast_horizon_h = max(1, round(horizon_s / 3600)) if is_forecast else None
         
         async def _evaluate_metric(metric_name: str, disaster_kind: str, value: Decimal | None):
             if value is None:
